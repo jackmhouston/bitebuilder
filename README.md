@@ -22,13 +22,22 @@ source .venv/bin/activate
 pip install -e .
 ```
 
+If `bitebuilder-gui` later reports that Tkinter is unavailable, recreate the virtualenv with a Tk-enabled interpreter instead of a Homebrew Python build without `_tkinter`. On this WSL setup, that means:
+
+```bash
+rm -rf .venv
+/usr/bin/python3.12 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+```
+
 Run the GUI:
 
 ```bash
 bitebuilder-gui
 ```
 
-If your Python build does not include Tk support, the GUI launcher will exit with a clear message and you can keep using the CLI until Tk is installed.
+If your Python build does not include Tk support, the GUI launcher will print a concrete interpreter suggestion when it can detect one.
 
 Run the CLI:
 
