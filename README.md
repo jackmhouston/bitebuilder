@@ -8,6 +8,7 @@ This repo is a rough v1 scaffold. It gives you:
 - a simple Tkinter desktop GUI for local/offline use
 - transcript parsing, Premiere XML parsing, prompt construction, and Ollama wiring
 - a placeholder XMEML sequence generator that can be refined against your reference doc
+- checked-in technical docs for Premiere XML generation and local Claude-auth workflow
 
 ## Why Tkinter for v1
 
@@ -49,6 +50,11 @@ bitebuilder generate \
   --dry-run
 ```
 
+## Docs
+
+- [Premiere XML Technical Reference](docs/Premiere_XML_Generation_Technical_Reference.md)
+- [Claude Auth Local Quickstart](docs/CLAUDE_AUTH_LOCAL_QUICKSTART.md)
+
 ## Project Layout
 
 ```text
@@ -77,3 +83,9 @@ The GUI is intentionally simple:
 - run button + log panel
 
 The XML generator is still a practical placeholder. It emits a sequence-shaped XMEML file using parsed source clip metadata, but it has not yet been hardened against all Premiere edge cases from your technical reference.
+
+## Local Claude Workflow
+
+If you want to use Claude locally while working on this repo without setting up Anthropic API keys, use the Claude account login flow described in [docs/CLAUDE_AUTH_LOCAL_QUICKSTART.md](docs/CLAUDE_AUTH_LOCAL_QUICKSTART.md).
+
+That quickstart is for your local coding workflow around this repo. The BiteBuilder runtime in this scaffold still uses Ollama as its model backend.
