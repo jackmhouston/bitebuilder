@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
+import subprocess
 import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -608,7 +610,7 @@ def main(argv: list[str] | None = None) -> None:
     print("Press Ctrl+C to stop the server.")
 
     if not args.no_browser:
-        opened = webbrowser.open(url)
+        opened = open_browser(url)
         if not opened:
             print(f"Open this URL in your browser: {url}")
 
@@ -715,6 +717,47 @@ def _build_handler():
             self.wfile.write(body)
 
     return BiteBuilderHandler
+
+
+def open_browser(url: str) -> bool:
+    if _is_wsl():
+        if _run_browser_command(["wslview", url]):
+            return True
+        if _run_browser_command(
+            ["powershell.exe", "-NoProfile", "-Command", f"Start-Process '{url}'"]
+        ):
+            return True
+        if _run_browser_command(["cmd.exe", "/c", "start", "", url]):
+            return True
+        return False
+
+    try:
+        return webbrowser.open(url)
+    except Exception:
+        return False
+
+
+def _is_wsl() -> bool:
+    return bool(os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP"))
+
+
+def _run_browser_command(command: list[str]) -> bool:
+    executable = command[0]
+    if executable.endswith(".exe") or executable == "cmd.exe":
+        pass
+    elif shutil.which(executable) is None:
+        return False
+
+    try:
+        subprocess.run(
+            command,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return False
+    return True
 
 
 def request_from_payload(payload: dict) -> GenerationRequest:
