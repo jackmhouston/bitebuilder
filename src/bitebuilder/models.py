@@ -56,9 +56,12 @@ class GenerationRequest:
     premiere_xml_path: Path
     brief: str
     output_path: Path
+    provider: str = "ollama"
     sequence_title: str = "BiteBuilder Selects"
-    model: str = "gemma3:12b"
+    model: str | None = None
     ollama_url: str = "http://127.0.0.1:11434"
+    claude_command: str = "claude"
+    claude_auth_token: str | None = None
     dry_run: bool = False
 
 
@@ -68,4 +71,3 @@ class GenerationResult:
     sequence_title: str
     selected_count: int
     warnings: list[str] = field(default_factory=list)
-

@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from bitebuilder.gui_support import tkinter_unavailable_message
 from bitebuilder.models import GenerationRequest
 from bitebuilder.pipeline import run_generation
 
@@ -21,12 +20,32 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--brief", help="Creative brief text.")
     generate.add_argument("--brief-file", help="Optional path to a text file with the brief.")
     generate.add_argument("--output", help="Where to write the generated XMEML file.")
+    generate.add_argument(
+        "--provider",
+        choices=("ollama", "claude-code"),
+        default="ollama",
+        help="LLM provider for selection passes.",
+    )
     generate.add_argument("--title", default="BiteBuilder Selects", help="Generated sequence title.")
-    generate.add_argument("--model", default="gemma3:12b", help="Ollama model name.")
+    generate.add_argument(
+        "--model",
+        help="Model name or alias. Defaults to gemma3:12b for Ollama and sonnet for Claude Code.",
+    )
     generate.add_argument("--ollama-url", default="http://127.0.0.1:11434", help="Ollama base URL.")
+    generate.add_argument(
+        "--claude-command",
+        default="claude",
+        help="Claude Code executable path when using provider=claude-code.",
+    )
+    generate.add_argument(
+        "--claude-auth-token",
+        help="Optional ANTHROPIC_AUTH_TOKEN override passed to Claude Code.",
+    )
     generate.add_argument("--dry-run", action="store_true", help="Skip Ollama and use local heuristics.")
-
-    subparsers.add_parser("gui", help="Launch the desktop GUI.")
+    gui = subparsers.add_parser("gui", help="Launch the localhost web UI.")
+    gui.add_argument("--host", default="127.0.0.1", help="Host interface to bind.")
+    gui.add_argument("--port", type=int, default=8765, help="Port to bind. Use 0 for a random free port.")
+    gui.add_argument("--no-browser", action="store_true", help="Do not automatically open a browser.")
     return parser
 
 
@@ -35,14 +54,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "gui":
-        try:
-            from bitebuilder.gui import main as gui_main
-        except ModuleNotFoundError as exc:
-            if exc.name == "_tkinter":
-                raise SystemExit(tkinter_unavailable_message()) from exc
-            raise
+        from bitebuilder.gui import main as gui_main
 
-        gui_main()
+        gui_args: list[str] = ["--host", args.host, "--port", str(args.port)]
+        if args.no_browser:
+            gui_args.append("--no-browser")
+        gui_main(gui_args)
         return 0
 
     if args.command != "generate":
@@ -57,9 +74,12 @@ def main(argv: list[str] | None = None) -> int:
         premiere_xml_path=Path(args.premiere_xml).expanduser().resolve(),
         brief=brief,
         output_path=output_path,
+        provider=args.provider,
         sequence_title=args.title,
         model=args.model,
         ollama_url=args.ollama_url,
+        claude_command=args.claude_command,
+        claude_auth_token=args.claude_auth_token,
         dry_run=args.dry_run,
     )
 

@@ -4,6 +4,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Callable
 
+from bitebuilder.claude_client import ClaudeCodeClient, ClaudeCodeError
 from bitebuilder.models import (
     GenerationRequest,
     GenerationResult,
@@ -37,17 +38,13 @@ def run_generation(
         selections = _fallback_selection(request.brief, transcript.segments)
     else:
         prompt = build_selection_prompt(request, transcript, project)
-        log(f"Asking local Ollama model {request.model} for an edit pass...")
         try:
-            llm_payload = OllamaClient(request.ollama_url).generate_json(
-                model=request.model,
-                prompt=prompt,
-            )
+            llm_payload = _run_model_selection(request, prompt, log)
             selections = _normalize_llm_selection(llm_payload, transcript.segments)
             log(f"Model returned {len(selections)} selected bites.")
-        except OllamaError as exc:
+        except (ClaudeCodeError, OllamaError) as exc:
             warnings.append(str(exc))
-            log(f"Ollama unavailable, falling back to deterministic selection: {exc}")
+            log(f"Provider unavailable, falling back to deterministic selection: {exc}")
             selections = _fallback_selection(request.brief, transcript.segments)
 
     if not selections:
@@ -71,6 +68,32 @@ def run_generation(
         selected_count=len(selections),
         warnings=warnings,
     )
+
+
+def _run_model_selection(request: GenerationRequest, prompt: str, log: Logger) -> dict:
+    provider = request.provider.casefold().strip()
+    if provider == "ollama":
+        model = request.model or "gemma3:12b"
+        log(f"Asking local Ollama model {model} for an edit pass...")
+        return OllamaClient(request.ollama_url).generate_json(
+            model=model,
+            prompt=prompt,
+        )
+
+    if provider == "claude-code":
+        model = request.model or "sonnet"
+        log(f"Asking local Claude Code model {model} for an edit pass...")
+        if request.claude_auth_token:
+            log("Using Claude auth token override from the request.")
+        else:
+            log("Using the current local Claude Code login session.")
+        return ClaudeCodeClient(request.claude_command).generate_json(
+            model=model,
+            prompt=prompt,
+            auth_token=request.claude_auth_token,
+        )
+
+    raise ValueError(f"Unsupported provider: {request.provider}")
 
 
 def _normalize_llm_selection(payload: dict, segments) -> list[SelectionCandidate]:
@@ -159,4 +182,3 @@ def _none_if_blank(value):
         return None
     text = str(value).strip()
     return text or None
-

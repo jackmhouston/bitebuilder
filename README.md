@@ -5,28 +5,20 @@ Local-first Python tooling for turning a transcript, a Premiere XML export, and 
 This repo is a rough v1 scaffold. It gives you:
 
 - a Python package layout that keeps CLI and GUI flows on the same pipeline
-- a simple Tkinter desktop GUI for local/offline use
+- a localhost browser GUI for local/offline use
 - transcript parsing, Premiere XML parsing, prompt construction, and Ollama wiring
+- optional Claude Code provider support through your local Claude login or auth token override
 - a placeholder XMEML sequence generator that can be refined against your reference doc
 - checked-in technical docs for Premiere XML generation and local Claude-auth workflow
 
-## Why Tkinter for v1
+## Why Localhost UI for v1
 
-Tkinter keeps the GUI dependency-free and easy to run on the same machine as Ollama. For a first internal tool, that matters more than polish.
+A localhost browser UI keeps the GUI dependency-light and avoids Python build issues like missing Tk support. It is still a thin local wrapper around the same Python pipeline as the CLI.
 
 ## Quick Start
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate
-pip install -e .
-```
-
-If `bitebuilder-gui` later reports that Tkinter is unavailable, recreate the virtualenv with a Tk-enabled interpreter instead of a Homebrew Python build without `_tkinter`. On this WSL setup, that means:
-
-```bash
-rm -rf .venv
-/usr/bin/python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -e .
 ```
@@ -37,7 +29,7 @@ Run the GUI:
 bitebuilder-gui
 ```
 
-If your Python build does not include Tk support, the GUI launcher will print a concrete interpreter suggestion when it can detect one.
+That starts a local web server, prints a localhost URL, and attempts to open it in your browser.
 
 Run the CLI:
 
@@ -46,6 +38,19 @@ bitebuilder generate \
   --transcript /path/to/transcript.txt \
   --premiere-xml /path/to/source.xml \
   --brief "Find a tight emotional arc for a 45 second short." \
+  --provider ollama \
+  --output /path/to/bitebuilder_selects.xml
+```
+
+Run the CLI with Claude Code instead of Ollama:
+
+```bash
+bitebuilder generate \
+  --transcript /path/to/transcript.txt \
+  --premiere-xml /path/to/source.xml \
+  --brief "Find the sharpest 45 second story arc." \
+  --provider claude-code \
+  --model sonnet \
   --output /path/to/bitebuilder_selects.xml
 ```
 
@@ -83,18 +88,23 @@ src/bitebuilder/
 
 The GUI is intentionally simple:
 
-- transcript file picker
-- Premiere XML picker
+- transcript path input
+- Premiere XML path input
 - sequence title
-- local Ollama model + URL
+- provider switch for Ollama or Claude Code
+- local Ollama URL
+- optional Claude command and auth token override
 - creative brief box
-- output file picker
+- output path input
 - run button + log panel
 
 The XML generator is still a practical placeholder. It emits a sequence-shaped XMEML file using parsed source clip metadata, but it has not yet been hardened against all Premiere edge cases from your technical reference.
 
 ## Local Claude Workflow
 
-If you want to use Claude locally while working on this repo without setting up Anthropic API keys, use the Claude account login flow described in [docs/CLAUDE_AUTH_LOCAL_QUICKSTART.md](docs/CLAUDE_AUTH_LOCAL_QUICKSTART.md).
+If you want to use Claude locally while working on this repo without setting up Anthropic API keys, use the Claude Code flow described in [docs/CLAUDE_AUTH_LOCAL_QUICKSTART.md](docs/CLAUDE_AUTH_LOCAL_QUICKSTART.md).
 
-That quickstart is for your local coding workflow around this repo. The BiteBuilder runtime in this scaffold still uses Ollama as its model backend.
+The current scaffold supports both:
+
+- Ollama as the fully local inference backend
+- Claude Code as a local CLI-backed provider using your saved Claude login or an optional auth token override
