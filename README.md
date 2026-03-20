@@ -31,6 +31,15 @@ bitebuilder-gui
 
 That starts a local web server, prints a localhost URL, and attempts to open it in your browser.
 
+The intended localhost flow is:
+
+1. Drag in the transcript `.txt`
+2. Drag in the Premiere stringout `.xml`
+3. Write the story prompt
+4. Choose `Ollama` or `Claude Code`
+5. Generate the XML
+6. Let the browser auto-download it, or provide an optional save path
+
 Run the CLI:
 
 ```bash
@@ -88,14 +97,14 @@ src/bitebuilder/
 
 The GUI is intentionally simple:
 
-- transcript path input
-- Premiere XML path input
+- transcript drag-and-drop
+- Premiere XML drag-and-drop
 - sequence title
 - provider switch for Ollama or Claude Code
 - local Ollama URL
 - optional Claude command and auth token override
 - creative brief box
-- output path input
+- optional output path input with Windows-path support from WSL
 - run button + log panel
 
 The XML generator is still a practical placeholder. It emits a sequence-shaped XMEML file using parsed source clip metadata, but it has not yet been hardened against all Premiere edge cases from your technical reference.

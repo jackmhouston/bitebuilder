@@ -3,9 +3,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
+import tempfile
 import webbrowser
+from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -13,6 +16,9 @@ from urllib.parse import urlparse
 
 from bitebuilder.models import GenerationRequest
 from bitebuilder.pipeline import run_generation
+
+WINDOWS_DRIVE_RE = re.compile(r"^(?P<drive>[A-Za-z]):[\\/](?P<rest>.*)$")
+WSL_UNC_RE = re.compile(r"^\\\\wsl(?:\.localhost)?\\[^\\]+\\(?P<rest>.*)$", re.IGNORECASE)
 
 HTML_PAGE = """<!doctype html>
 <html lang="en">
@@ -22,134 +28,157 @@ HTML_PAGE = """<!doctype html>
   <title>BiteBuilder</title>
   <style>
     :root {
-      --bg: #07111d;
-      --panel: rgba(14, 24, 43, 0.88);
-      --panel-2: rgba(10, 17, 31, 0.92);
-      --line: rgba(125, 189, 255, 0.2);
-      --text: #ecf6ff;
-      --muted: #8fa5bf;
-      --accent: #5df0cf;
-      --accent-2: #ffbe5c;
-      --danger: #ff8c8c;
-      --shadow: 0 30px 80px rgba(0, 0, 0, 0.45);
+      --bg: #000;
+      --panel: #050505;
+      --line: #2a2a2a;
+      --line-strong: #fff;
+      --text: #fff;
+      --muted: #b8b8b8;
+      --danger: #ff6b6b;
     }
 
     * { box-sizing: border-box; }
 
     body {
       margin: 0;
-      min-height: 100vh;
-      font-family: "JetBrains Mono", "Fira Code", "SFMono-Regular", monospace;
+      background: var(--bg);
       color: var(--text);
-      background:
-        radial-gradient(circle at top left, rgba(93, 240, 207, 0.16), transparent 28%),
-        radial-gradient(circle at top right, rgba(255, 190, 92, 0.15), transparent 32%),
-        linear-gradient(160deg, #050b14 0%, #091526 45%, #08101b 100%);
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
     }
 
-    .shell {
-      width: min(1380px, calc(100vw - 32px));
-      margin: 20px auto;
-      padding: 24px;
-      border: 1px solid var(--line);
-      border-radius: 28px;
-      background: rgba(6, 11, 20, 0.7);
-      backdrop-filter: blur(14px);
-      box-shadow: var(--shadow);
+    .app {
+      width: min(1100px, calc(100vw - 24px));
+      margin: 12px auto 48px;
     }
 
-    .topbar {
-      display: flex;
-      justify-content: space-between;
-      gap: 16px;
-      align-items: end;
-      margin-bottom: 22px;
+    .hero {
+      padding: 20px 4px 18px;
+      border-bottom: 1px solid var(--line);
     }
 
     .kicker {
-      color: var(--accent);
-      text-transform: uppercase;
-      letter-spacing: 0.18em;
+      color: var(--muted);
       font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
       margin-bottom: 10px;
     }
 
     h1 {
       margin: 0;
-      font-family: "Space Grotesk", "Avenir Next", "Segoe UI", sans-serif;
-      font-size: clamp(32px, 5vw, 64px);
-      line-height: 0.95;
+      font-size: clamp(28px, 5vw, 52px);
+      line-height: 1;
       letter-spacing: -0.04em;
+      font-family: Arial, Helvetica, sans-serif;
+      font-weight: 800;
     }
 
-    .subhead {
+    .subtitle {
       margin-top: 12px;
-      max-width: 78ch;
       color: var(--muted);
+      max-width: 70ch;
       line-height: 1.6;
       font-size: 14px;
     }
 
-    .status {
-      min-width: 300px;
-      padding: 16px 18px;
-      border: 1px solid var(--line);
-      border-radius: 22px;
-      background: linear-gradient(180deg, rgba(18, 30, 52, 0.9), rgba(10, 18, 33, 0.95));
-    }
-
-    .status h2,
-    .panel h2 {
-      margin: 0 0 10px;
-      font-family: "Space Grotesk", "Segoe UI", sans-serif;
-      font-size: 18px;
-      letter-spacing: -0.02em;
-    }
-
-    .status-line {
-      font-size: 13px;
+    .runtime {
+      margin-top: 18px;
       color: var(--muted);
-      margin: 6px 0;
+      font-size: 13px;
+      line-height: 1.6;
     }
 
-    .grid {
+    .layout {
       display: grid;
-      grid-template-columns: minmax(0, 1.5fr) minmax(360px, 0.9fr);
-      gap: 18px;
+      grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+      gap: 16px;
+      margin-top: 18px;
     }
 
     .panel {
       border: 1px solid var(--line);
-      border-radius: 24px;
       background: var(--panel);
-      padding: 20px;
+      padding: 18px;
     }
 
-    .form-grid {
+    .panel h2 {
+      margin: 0 0 14px;
+      font-size: 16px;
+      font-family: Arial, Helvetica, sans-serif;
+      letter-spacing: 0.01em;
+    }
+
+    .stack {
       display: grid;
-      grid-template-columns: repeat(12, minmax(0, 1fr));
       gap: 14px;
     }
 
+    .drop-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .dropzone {
+      min-height: 180px;
+      border: 1px dashed #6b6b6b;
+      background: #020202;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 10px;
+      cursor: pointer;
+      transition: border-color 0.16s ease, background 0.16s ease;
+    }
+
+    .dropzone:hover,
+    .dropzone.active {
+      border-color: var(--line-strong);
+      background: #090909;
+    }
+
+    .drop-title {
+      font-size: 14px;
+      font-weight: 700;
+      font-family: Arial, Helvetica, sans-serif;
+    }
+
+    .drop-copy {
+      color: var(--muted);
+      line-height: 1.5;
+      font-size: 13px;
+    }
+
+    .drop-meta {
+      color: var(--text);
+      font-size: 12px;
+      line-height: 1.5;
+      word-break: break-word;
+    }
+
     .field {
-      grid-column: span 12;
+      display: grid;
+      gap: 8px;
     }
 
-    .field.half {
-      grid-column: span 6;
+    .two-up {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
     }
 
-    .field.third {
-      grid-column: span 4;
+    .three-up {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
     }
 
     label {
-      display: block;
-      margin-bottom: 8px;
-      color: var(--muted);
       font-size: 12px;
+      color: var(--muted);
       text-transform: uppercase;
-      letter-spacing: 0.12em;
+      letter-spacing: 0.08em;
     }
 
     input,
@@ -157,21 +186,21 @@ HTML_PAGE = """<!doctype html>
     textarea,
     button {
       width: 100%;
-      border: 1px solid rgba(125, 189, 255, 0.18);
-      border-radius: 16px;
-      background: var(--panel-2);
+      border: 1px solid var(--line);
+      background: #000;
       color: var(--text);
       font: inherit;
+      border-radius: 0;
     }
 
     input,
     select,
     textarea {
-      padding: 14px 16px;
+      padding: 12px 14px;
     }
 
     textarea {
-      min-height: 220px;
+      min-height: 180px;
       resize: vertical;
       line-height: 1.5;
     }
@@ -180,55 +209,16 @@ HTML_PAGE = """<!doctype html>
     select:focus,
     textarea:focus {
       outline: none;
-      border-color: rgba(93, 240, 207, 0.65);
-      box-shadow: 0 0 0 3px rgba(93, 240, 207, 0.12);
+      border-color: var(--line-strong);
     }
 
-    .provider-note,
-    .mini-note {
-      margin-top: 8px;
-      color: var(--muted);
+    .hint {
       font-size: 12px;
+      color: var(--muted);
       line-height: 1.5;
     }
 
-    .toggle-row {
-      display: flex;
-      gap: 16px;
-      align-items: center;
-      flex-wrap: wrap;
-      margin-top: 6px;
-    }
-
-    .toggle {
-      display: inline-flex;
-      align-items: center;
-      gap: 10px;
-      padding: 12px 14px;
-      border-radius: 16px;
-      border: 1px solid rgba(125, 189, 255, 0.12);
-      background: rgba(8, 15, 28, 0.72);
-      color: var(--text);
-      width: auto;
-    }
-
-    .toggle input {
-      width: 16px;
-      height: 16px;
-      margin: 0;
-    }
-
     .actions {
-      display: flex;
-      justify-content: space-between;
-      gap: 14px;
-      margin-top: 18px;
-      flex-wrap: wrap;
-      align-items: center;
-    }
-
-    .actions-left,
-    .actions-right {
       display: flex;
       gap: 12px;
       flex-wrap: wrap;
@@ -237,227 +227,213 @@ HTML_PAGE = """<!doctype html>
 
     button {
       width: auto;
+      padding: 12px 16px;
       cursor: pointer;
-      transition: transform 0.18s ease, border-color 0.18s ease, background 0.18s ease;
-      padding: 14px 18px;
     }
 
     button:hover {
-      transform: translateY(-1px);
-      border-color: rgba(93, 240, 207, 0.48);
+      border-color: var(--line-strong);
     }
 
     .primary {
-      background: linear-gradient(135deg, rgba(93, 240, 207, 0.9), rgba(123, 255, 224, 0.78));
-      color: #051016;
+      background: #fff;
+      color: #000;
+      border-color: #fff;
       font-weight: 700;
     }
 
-    .ghost {
-      background: rgba(8, 15, 28, 0.72);
-      color: var(--text);
-    }
-
-    .pill {
-      display: inline-flex;
-      gap: 8px;
-      align-items: center;
-      padding: 8px 12px;
-      border-radius: 999px;
-      border: 1px solid rgba(125, 189, 255, 0.14);
-      color: var(--muted);
-      background: rgba(8, 15, 28, 0.6);
-      font-size: 12px;
-    }
-
     .log {
-      min-height: 420px;
-      max-height: 65vh;
+      min-height: 460px;
+      max-height: 70vh;
       overflow: auto;
-      padding: 16px;
-      border-radius: 18px;
-      background: #050b14;
-      border: 1px solid rgba(93, 240, 207, 0.12);
       white-space: pre-wrap;
+      background: #000;
+      border: 1px solid var(--line);
+      padding: 14px;
       line-height: 1.55;
-      color: #bafbe9;
-    }
-
-    .result-card {
-      margin-top: 14px;
-      padding: 14px 16px;
-      border-radius: 18px;
-      border: 1px solid rgba(255, 190, 92, 0.16);
-      background: rgba(255, 190, 92, 0.07);
-      color: var(--text);
+      color: #fff;
     }
 
     .error {
       color: var(--danger);
     }
 
-    .hidden {
-      display: none;
+    .result {
+      margin-top: 14px;
+      border-top: 1px solid var(--line);
+      padding-top: 14px;
+      line-height: 1.6;
+      font-size: 13px;
     }
 
-    @media (max-width: 1100px) {
-      .grid {
+    .result code {
+      word-break: break-word;
+    }
+
+    .hidden {
+      display: none !important;
+    }
+
+    @media (max-width: 900px) {
+      .layout,
+      .drop-grid,
+      .two-up,
+      .three-up {
         grid-template-columns: 1fr;
       }
 
-      .status {
-        min-width: 0;
-      }
-    }
-
-    @media (max-width: 760px) {
-      .shell {
+      .app {
         width: min(100vw, calc(100vw - 16px));
-        margin: 8px auto;
-        padding: 14px;
-        border-radius: 20px;
-      }
-
-      .topbar {
-        flex-direction: column;
-        align-items: stretch;
-      }
-
-      .field.half,
-      .field.third {
-        grid-column: span 12;
       }
     }
   </style>
 </head>
 <body>
-  <div class="shell">
-    <div class="topbar">
-      <div>
-        <div class="kicker">Localhost Edit Bay</div>
-        <h1>BiteBuilder</h1>
-        <div class="subhead">
-          Transcript, Premiere XML, and a creative brief in. Selectable Ollama, Claude Code, or dry-run logic out.
-          This browser UI stays thin and drives the same Python pipeline as the CLI.
-        </div>
+  <div class="app">
+    <div class="hero">
+      <div class="kicker">Localhost Edit Bay</div>
+      <h1>BiteBuilder</h1>
+      <div class="subtitle">
+        Drop in a transcript, drop in the stringout XML, tell it what story you want, and let the local pipeline do the rest.
+        Ollama stays supported. Claude Code stays supported. Dry run stays supported.
       </div>
-      <div class="status">
-        <h2>Runtime</h2>
-        <div class="status-line" id="runtime-status">Loading local provider status...</div>
-        <div class="status-line" id="cwd-status"></div>
-      </div>
+      <div class="runtime" id="runtime-status">Loading runtime status...</div>
+      <div class="runtime" id="cwd-status"></div>
     </div>
 
-    <div class="grid">
+    <div class="layout">
       <section class="panel">
-        <h2>Build A Select Sequence</h2>
-        <form id="builder-form">
-          <div class="form-grid">
-            <div class="field half">
-              <label for="transcript_path">Transcript Path</label>
-              <input id="transcript_path" name="transcript_path" placeholder="/absolute/path/to/transcript.txt" required>
+        <h2>Inputs</h2>
+        <form id="builder-form" class="stack">
+          <div class="drop-grid">
+            <div class="dropzone" id="transcript-drop" tabindex="0">
+              <div class="drop-title">Transcript .txt</div>
+              <div class="drop-copy">Drag a transcript here or click to choose a file.</div>
+              <div class="drop-meta" id="transcript-meta">No transcript loaded.</div>
+              <input id="transcript-input" type="file" accept=".txt,text/plain" class="hidden">
             </div>
-            <div class="field half">
-              <label for="premiere_xml_path">Premiere XML Path</label>
-              <input id="premiere_xml_path" name="premiere_xml_path" placeholder="/absolute/path/to/source.xml" required>
+            <div class="dropzone" id="xml-drop" tabindex="0">
+              <div class="drop-title">Stringout XML</div>
+              <div class="drop-copy">Drag the Premiere XML export here or click to choose it.</div>
+              <div class="drop-meta" id="xml-meta">No XML loaded.</div>
+              <input id="xml-input" type="file" accept=".xml,text/xml,application/xml" class="hidden">
             </div>
+          </div>
 
-            <div class="field half">
-              <label for="output_path">Output XML Path</label>
-              <input id="output_path" name="output_path" placeholder="/absolute/path/to/output.xml" required>
-              <div class="mini-note">Use the prefill button if you want the output next to the transcript.</div>
-            </div>
-            <div class="field half">
+          <div class="two-up">
+            <div class="field">
               <label for="sequence_title">Sequence Title</label>
               <input id="sequence_title" name="sequence_title" value="BiteBuilder Selects">
             </div>
+            <div class="field">
+              <label for="output_path">Optional Save Path</label>
+              <input id="output_path" name="output_path" placeholder="Leave blank to auto-download. Windows paths like C:\\Users\\jackm\\Downloads\\out.xml work.">
+              <div class="hint">If blank, the browser downloads the generated XML automatically.</div>
+            </div>
+          </div>
 
-            <div class="field third">
+          <div class="three-up">
+            <div class="field">
               <label for="provider">Provider</label>
               <select id="provider" name="provider">
                 <option value="ollama">Ollama</option>
                 <option value="claude-code">Claude Code</option>
               </select>
             </div>
-            <div class="field third">
+            <div class="field">
               <label for="model">Model</label>
               <input id="model" name="model" value="gemma3:12b">
             </div>
-            <div class="field third provider-ollama">
+            <div class="field provider-ollama">
               <label for="ollama_url">Ollama URL</label>
               <input id="ollama_url" name="ollama_url" value="http://127.0.0.1:11434">
             </div>
+          </div>
 
-            <div class="field half provider-claude hidden">
+          <div class="two-up provider-claude hidden">
+            <div class="field">
               <label for="claude_command">Claude Command</label>
               <input id="claude_command" name="claude_command" value="claude">
-              <div class="mini-note">Used for local headless calls like <code>claude -p</code>.</div>
             </div>
-            <div class="field half provider-claude hidden">
+            <div class="field">
               <label for="claude_auth_token">Claude Auth Token</label>
               <input id="claude_auth_token" name="claude_auth_token" type="password" placeholder="Optional ANTHROPIC_AUTH_TOKEN override">
-              <div class="mini-note">Leave blank to use the current <code>claude auth login</code> session.</div>
-            </div>
-
-            <div class="field">
-              <label for="brief">Creative Brief</label>
-              <textarea id="brief" name="brief" placeholder="Find the cleanest emotional arc, avoid throat-clearing, keep the rhythm tight, and bias toward lines that can stand alone in a short."></textarea>
-              <div class="provider-note" id="provider-note">
-                Ollama stays fully local. Claude Code uses your local Claude login or an optional auth token override through the local CLI.
-              </div>
+              <div class="hint">Left blank, BiteBuilder uses your current local Claude Code login.</div>
             </div>
           </div>
 
+          <div class="field">
+            <label for="brief">Story Prompt</label>
+            <textarea id="brief" name="brief" placeholder="Make a good story from this. Keep the arc tight. Avoid filler. Prefer lines that can stand alone in a short."></textarea>
+            <div class="hint" id="provider-note">Ollama stays fully local and uses the Ollama HTTP endpoint.</div>
+          </div>
+
           <div class="actions">
-            <div class="actions-left">
-              <label class="toggle">
-                <input id="dry_run" name="dry_run" type="checkbox">
-                <span>Dry run fallback only</span>
-              </label>
-              <div class="pill" id="provider-pill">Provider: Ollama</div>
-            </div>
-            <div class="actions-right">
-              <button class="ghost" type="button" id="prefill-output">Prefill Output</button>
-              <button class="ghost" type="button" id="clear-log">Clear Log</button>
-              <button class="primary" type="submit" id="submit-button">Generate XML</button>
-            </div>
+            <label style="display:flex;gap:10px;align-items:center;border:1px solid var(--line);padding:12px 14px;text-transform:none;letter-spacing:0;width:auto;color:var(--text);">
+              <input id="dry_run" name="dry_run" type="checkbox" style="width:auto;margin:0;">
+              <span>Dry run fallback only</span>
+            </label>
+            <button type="button" id="prefill-output">Prefill Output Name</button>
+            <button type="button" id="clear-log">Clear Log</button>
+            <button type="submit" class="primary" id="submit-button">Generate XML</button>
           </div>
         </form>
       </section>
 
       <aside class="panel">
         <h2>Run Log</h2>
-        <div class="subhead" style="margin-top: 0; margin-bottom: 14px;">
-          Use this while iterating on prompts, XML structure, provider behavior, and Premiere import edge cases.
-        </div>
+        <div class="hint" style="margin-bottom: 14px;">This stays simple: load files, write the prompt, generate, and get the XML back.</div>
         <div class="log" id="log">Ready.</div>
-        <div class="result-card hidden" id="result-card"></div>
+        <div class="result hidden" id="result"></div>
       </aside>
     </div>
   </div>
 
   <script>
     const form = document.getElementById("builder-form");
+    const logEl = document.getElementById("log");
+    const resultEl = document.getElementById("result");
+    const submitButton = document.getElementById("submit-button");
     const providerEl = document.getElementById("provider");
     const modelEl = document.getElementById("model");
-    const logEl = document.getElementById("log");
-    const resultCard = document.getElementById("result-card");
+    const providerNote = document.getElementById("provider-note");
     const runtimeStatus = document.getElementById("runtime-status");
     const cwdStatus = document.getElementById("cwd-status");
-    const providerPill = document.getElementById("provider-pill");
-    const providerNote = document.getElementById("provider-note");
-    const submitButton = document.getElementById("submit-button");
+    const transcriptMeta = document.getElementById("transcript-meta");
+    const xmlMeta = document.getElementById("xml-meta");
+
+    const fileState = {
+      transcript: null,
+      xml: null
+    };
 
     const providerDefaults = {
       "ollama": {
         model: "gemma3:12b",
-        note: "Ollama stays fully local. Point the URL at your local Ollama daemon and keep inference on-box."
+        note: "Ollama stays fully local and uses the Ollama HTTP endpoint."
       },
       "claude-code": {
         model: "sonnet",
-        note: "Claude Code runs locally through the CLI. Leave the token blank to use your saved Claude login, or paste an ANTHROPIC_AUTH_TOKEN override."
+        note: "Claude Code runs locally through the claude CLI. Leave the token blank to use your saved login."
       }
     };
+
+    function appendLog(text, isError = false) {
+      if (logEl.textContent === "Ready.") {
+        logEl.textContent = "";
+      }
+      const row = document.createElement("div");
+      if (isError) row.className = "error";
+      row.textContent = text;
+      logEl.appendChild(row);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function clearLog() {
+      logEl.textContent = "Ready.";
+      resultEl.textContent = "";
+      resultEl.classList.add("hidden");
+    }
 
     function setProviderUI() {
       const provider = providerEl.value;
@@ -467,44 +443,24 @@ HTML_PAGE = """<!doctype html>
       document.querySelectorAll(".provider-claude").forEach((el) => {
         el.classList.toggle("hidden", provider !== "claude-code");
       });
-      providerPill.textContent = provider === "ollama" ? "Provider: Ollama" : "Provider: Claude Code";
       providerNote.textContent = providerDefaults[provider].note;
-      if (!modelEl.value || modelEl.value === providerDefaults["ollama"].model || modelEl.value === providerDefaults["claude-code"].model) {
+      if (!modelEl.value || modelEl.value === "gemma3:12b" || modelEl.value === "sonnet") {
         modelEl.value = providerDefaults[provider].model;
       }
       saveDraft();
     }
 
-    function appendLog(text, isError = false) {
-      if (logEl.textContent === "Ready.") {
-        logEl.textContent = "";
-      }
-      const block = document.createElement("div");
-      if (isError) block.className = "error";
-      block.textContent = text;
-      logEl.appendChild(block);
-      logEl.scrollTop = logEl.scrollHeight;
-    }
-
-    function clearLog() {
-      logEl.textContent = "Ready.";
-      resultCard.classList.add("hidden");
-      resultCard.textContent = "";
-    }
-
-    function prefillOutput() {
-      const transcript = document.getElementById("transcript_path").value.trim();
-      const output = document.getElementById("output_path");
-      if (!transcript) return;
-      if (transcript.endsWith(".txt")) {
-        output.value = transcript.slice(0, -4) + "_bitebuilder.xml";
-        saveDraft();
-      }
-    }
-
     function saveDraft() {
-      const data = Object.fromEntries(new FormData(form).entries());
-      data.dry_run = document.getElementById("dry_run").checked;
+      const data = {
+        sequence_title: document.getElementById("sequence_title").value,
+        output_path: document.getElementById("output_path").value,
+        provider: providerEl.value,
+        model: modelEl.value,
+        ollama_url: document.getElementById("ollama_url").value,
+        claude_command: document.getElementById("claude_command").value,
+        brief: document.getElementById("brief").value,
+        dry_run: document.getElementById("dry_run").checked
+      };
       localStorage.setItem("bitebuilder-draft", JSON.stringify(data));
     }
 
@@ -513,16 +469,90 @@ HTML_PAGE = """<!doctype html>
       if (!raw) return;
       try {
         const data = JSON.parse(raw);
-        for (const [key, value] of Object.entries(data)) {
-          const field = form.elements.namedItem(key);
-          if (!field) continue;
-          if (field.type === "checkbox") {
-            field.checked = Boolean(value);
-          } else if (typeof value === "string") {
-            field.value = value;
-          }
-        }
+        if (typeof data.sequence_title === "string") document.getElementById("sequence_title").value = data.sequence_title;
+        if (typeof data.output_path === "string") document.getElementById("output_path").value = data.output_path;
+        if (typeof data.provider === "string") providerEl.value = data.provider;
+        if (typeof data.model === "string") modelEl.value = data.model;
+        if (typeof data.ollama_url === "string") document.getElementById("ollama_url").value = data.ollama_url;
+        if (typeof data.claude_command === "string") document.getElementById("claude_command").value = data.claude_command;
+        if (typeof data.brief === "string") document.getElementById("brief").value = data.brief;
+        document.getElementById("dry_run").checked = Boolean(data.dry_run);
       } catch (_error) {
+      }
+    }
+
+    function setFile(kind, file) {
+      fileState[kind] = file;
+      const meta = kind === "transcript" ? transcriptMeta : xmlMeta;
+      if (!file) {
+        meta.textContent = kind === "transcript" ? "No transcript loaded." : "No XML loaded.";
+        return;
+      }
+      meta.textContent = `${file.name} (${Math.round(file.size / 1024)} KB)`;
+    }
+
+    function bindDropzone(dropId, inputId, kind) {
+      const drop = document.getElementById(dropId);
+      const input = document.getElementById(inputId);
+
+      drop.addEventListener("click", () => input.click());
+      drop.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          input.click();
+        }
+      });
+
+      input.addEventListener("change", () => {
+        const [file] = input.files;
+        if (file) setFile(kind, file);
+      });
+
+      ["dragenter", "dragover"].forEach((eventName) => {
+        drop.addEventListener(eventName, (event) => {
+          event.preventDefault();
+          drop.classList.add("active");
+        });
+      });
+
+      ["dragleave", "drop"].forEach((eventName) => {
+        drop.addEventListener(eventName, (event) => {
+          event.preventDefault();
+          if (eventName === "drop") {
+            const [file] = event.dataTransfer.files;
+            if (file) setFile(kind, file);
+          }
+          drop.classList.remove("active");
+        });
+      });
+    }
+
+    function maybePrefillOutput(filename) {
+      const output = document.getElementById("output_path");
+      if (output.value.trim()) return;
+      const next = filename.replace(/\\.txt$/i, "") + "_bitebuilder.xml";
+      output.value = next;
+      saveDraft();
+    }
+
+    function downloadXml(filename, content) {
+      const blob = new Blob([content], { type: "application/xml;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    async function parseJsonResponse(response) {
+      const raw = await response.text();
+      try {
+        return JSON.parse(raw);
+      } catch (_error) {
+        throw new Error(raw || `HTTP ${response.status}`);
       }
     }
 
@@ -530,43 +560,89 @@ HTML_PAGE = """<!doctype html>
       const response = await fetch("/api/info");
       const data = await response.json();
       const claude = data.providers["claude-code"];
-      runtimeStatus.textContent =
-        "Ollama: local HTTP provider. Claude Code: " +
-        (claude.available ? `found at ${claude.command}` : "not found in PATH");
+      runtimeStatus.textContent = `Ollama: local HTTP provider. Claude Code: ${claude.available ? `found at ${claude.command}` : "not found in PATH"}`;
       cwdStatus.textContent = `Working directory: ${data.cwd}`;
     }
 
-    form.addEventListener("input", saveDraft);
     providerEl.addEventListener("change", setProviderUI);
-    document.getElementById("prefill-output").addEventListener("click", prefillOutput);
+    form.addEventListener("input", (event) => {
+      if (event.target.id === "claude_auth_token") return;
+      saveDraft();
+    });
     document.getElementById("clear-log").addEventListener("click", clearLog);
+    document.getElementById("prefill-output").addEventListener("click", () => {
+      if (fileState.transcript) maybePrefillOutput(fileState.transcript.name);
+    });
+
+    bindDropzone("transcript-drop", "transcript-input", "transcript");
+    bindDropzone("xml-drop", "xml-input", "xml");
 
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       clearLog();
-      saveDraft();
+
+      if (!fileState.transcript) {
+        appendLog("Load a transcript .txt file first.", true);
+        return;
+      }
+      if (!fileState.xml) {
+        appendLog("Load a Premiere XML file first.", true);
+        return;
+      }
+
       submitButton.disabled = true;
       submitButton.textContent = "Generating...";
 
-      const payload = Object.fromEntries(new FormData(form).entries());
-      payload.dry_run = document.getElementById("dry_run").checked;
-
       try {
+        const payload = {
+          transcript_name: fileState.transcript.name,
+          transcript_content: await fileState.transcript.text(),
+          premiere_xml_name: fileState.xml.name,
+          premiere_xml_content: await fileState.xml.text(),
+          sequence_title: document.getElementById("sequence_title").value,
+          output_path: document.getElementById("output_path").value,
+          provider: providerEl.value,
+          model: modelEl.value,
+          ollama_url: document.getElementById("ollama_url").value,
+          claude_command: document.getElementById("claude_command").value,
+          claude_auth_token: document.getElementById("claude_auth_token").value,
+          brief: document.getElementById("brief").value,
+          dry_run: document.getElementById("dry_run").checked
+        };
+
         const response = await fetch("/api/generate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload)
         });
-        const data = await response.json();
+        const data = await parseJsonResponse(response);
+
         (data.logs || []).forEach((line) => appendLog(line));
+
         if (!response.ok || !data.ok) {
           appendLog(data.error || "Generation failed.", true);
           return;
         }
-        resultCard.classList.remove("hidden");
-        resultCard.innerHTML =
-          `<strong>${data.result.sequence_title}</strong><br>` +
-          `${data.result.selected_count} selections written to:<br><code>${data.result.output_path}</code>`;
+
+        if (data.result.output_xml && data.result.download_name) {
+          downloadXml(data.result.download_name, data.result.output_xml);
+        }
+
+        resultEl.classList.remove("hidden");
+        resultEl.innerHTML = "";
+        const lines = [
+          `${data.result.sequence_title}`,
+          `${data.result.selected_count} selections generated.`,
+          data.result.saved_output_path
+            ? `Saved to: ${data.result.saved_output_path}`
+            : `Downloaded as: ${data.result.download_name}`
+        ];
+        lines.forEach((line) => {
+          const row = document.createElement("div");
+          row.textContent = line;
+          resultEl.appendChild(row);
+        });
+
         if (data.result.warnings && data.result.warnings.length) {
           appendLog("Warnings:");
           data.result.warnings.forEach((warning) => appendLog(`- ${warning}`, true));
@@ -589,6 +665,14 @@ HTML_PAGE = """<!doctype html>
 </body>
 </html>
 """
+
+
+@dataclass(slots=True)
+class PreparedRequest:
+    request: GenerationRequest
+    temporary_dir: Path | None
+    download_name: str
+    saved_output_path: str | None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -655,16 +739,16 @@ def _build_handler():
                 self._write_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Not found"})
                 return
 
-            try:
-                payload = self._read_json()
-                request = request_from_payload(payload)
-            except ValueError as exc:
-                self._write_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc), "logs": []})
-                return
-
+            prepared: PreparedRequest | None = None
             logs: list[str] = []
             try:
-                result = run_generation(request, logger=logs.append)
+                payload = self._read_json()
+                prepared = prepare_request_from_payload(payload)
+                result = run_generation(prepared.request, logger=logs.append)
+                output_xml = result.output_path.read_text(encoding="utf-8")
+            except ValueError as exc:
+                self._write_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc), "logs": logs})
+                return
             except Exception as exc:
                 logs.append(f"Generation failed: {exc}")
                 self._write_json(
@@ -676,6 +760,9 @@ def _build_handler():
                     },
                 )
                 return
+            finally:
+                if prepared is not None and prepared.temporary_dir is not None:
+                    shutil.rmtree(prepared.temporary_dir, ignore_errors=True)
 
             self._write_json(
                 HTTPStatus.OK,
@@ -683,10 +770,12 @@ def _build_handler():
                     "ok": True,
                     "logs": logs,
                     "result": {
-                        "output_path": str(result.output_path),
                         "sequence_title": result.sequence_title,
                         "selected_count": result.selected_count,
                         "warnings": result.warnings,
+                        "saved_output_path": prepared.saved_output_path,
+                        "download_name": prepared.download_name,
+                        "output_xml": output_xml,
                     },
                 },
             )
@@ -717,6 +806,85 @@ def _build_handler():
             self.wfile.write(body)
 
     return BiteBuilderHandler
+
+
+def prepare_request_from_payload(payload: dict) -> PreparedRequest:
+    brief = _required_text(payload, "brief")
+    provider = _optional_text(payload.get("provider")) or "ollama"
+    if provider not in {"ollama", "claude-code"}:
+        raise ValueError(f"Unsupported provider: {provider}")
+
+    temporary_dir: Path | None = None
+
+    transcript_content = _optional_text(payload.get("transcript_content"))
+    premiere_xml_content = _optional_text(payload.get("premiere_xml_content"))
+    transcript_name = _sanitize_filename(_optional_text(payload.get("transcript_name")) or "transcript.txt")
+    premiere_xml_name = _sanitize_filename(_optional_text(payload.get("premiere_xml_name")) or "stringout.xml")
+
+    if transcript_content is not None and premiere_xml_content is not None:
+        temporary_dir = Path(tempfile.mkdtemp(prefix="bitebuilder-ui-"))
+        transcript_path = temporary_dir / transcript_name
+        premiere_xml_path = temporary_dir / premiere_xml_name
+        transcript_path.write_text(transcript_content, encoding="utf-8")
+        premiere_xml_path.write_text(premiere_xml_content, encoding="utf-8")
+    else:
+        transcript_path = _required_path(payload, "transcript_path")
+        premiere_xml_path = _required_path(payload, "premiere_xml_path")
+        transcript_name = transcript_path.name
+
+    output_text = _optional_text(payload.get("output_path"))
+    saved_output_path: str | None = None
+
+    if output_text:
+        output_path = normalize_user_path(output_text)
+        saved_output_path = str(output_path)
+    else:
+        if temporary_dir is None:
+            temporary_dir = Path(tempfile.mkdtemp(prefix="bitebuilder-ui-"))
+        output_path = temporary_dir / _suggest_output_name(transcript_name)
+
+    request = GenerationRequest(
+        transcript_path=transcript_path,
+        premiere_xml_path=premiere_xml_path,
+        output_path=output_path,
+        brief=brief,
+        provider=provider,
+        sequence_title=_optional_text(payload.get("sequence_title")) or "BiteBuilder Selects",
+        model=_optional_text(payload.get("model")),
+        ollama_url=_optional_text(payload.get("ollama_url")) or "http://127.0.0.1:11434",
+        claude_command=_optional_text(payload.get("claude_command")) or "claude",
+        claude_auth_token=_optional_text(payload.get("claude_auth_token")),
+        dry_run=bool(payload.get("dry_run")),
+    )
+    return PreparedRequest(
+        request=request,
+        temporary_dir=temporary_dir,
+        download_name=output_path.name,
+        saved_output_path=saved_output_path,
+    )
+
+
+def request_from_payload(payload: dict) -> GenerationRequest:
+    return prepare_request_from_payload(payload).request
+
+
+def normalize_user_path(value: str) -> Path:
+    text = _strip_wrapping_quotes(value.strip())
+    if not text:
+        raise ValueError("Path cannot be blank.")
+
+    windows_match = WINDOWS_DRIVE_RE.match(text)
+    if windows_match:
+        drive = windows_match.group("drive").lower()
+        rest = windows_match.group("rest").replace("\\", "/")
+        return (Path("/mnt") / drive / Path(rest)).expanduser().resolve()
+
+    unc_match = WSL_UNC_RE.match(text)
+    if unc_match:
+        rest = unc_match.group("rest").replace("\\", "/")
+        return (Path("/") / Path(rest)).expanduser().resolve()
+
+    return Path(text).expanduser().resolve()
 
 
 def open_browser(url: str) -> bool:
@@ -760,36 +928,11 @@ def _run_browser_command(command: list[str]) -> bool:
     return True
 
 
-def request_from_payload(payload: dict) -> GenerationRequest:
-    transcript_path = _required_path(payload, "transcript_path")
-    premiere_xml_path = _required_path(payload, "premiere_xml_path")
-    output_path = _required_path(payload, "output_path")
-    brief = _required_text(payload, "brief")
-
-    provider = _optional_text(payload.get("provider")) or "ollama"
-    if provider not in {"ollama", "claude-code"}:
-        raise ValueError(f"Unsupported provider: {provider}")
-
-    return GenerationRequest(
-        transcript_path=transcript_path,
-        premiere_xml_path=premiere_xml_path,
-        output_path=output_path,
-        brief=brief,
-        provider=provider,
-        sequence_title=_optional_text(payload.get("sequence_title")) or "BiteBuilder Selects",
-        model=_optional_text(payload.get("model")),
-        ollama_url=_optional_text(payload.get("ollama_url")) or "http://127.0.0.1:11434",
-        claude_command=_optional_text(payload.get("claude_command")) or "claude",
-        claude_auth_token=_optional_text(payload.get("claude_auth_token")),
-        dry_run=bool(payload.get("dry_run")),
-    )
-
-
 def _required_path(payload: dict, key: str) -> Path:
     text = _optional_text(payload.get(key))
     if not text:
         raise ValueError(f"Missing required field: {key}")
-    return Path(text).expanduser().resolve()
+    return normalize_user_path(text)
 
 
 def _required_text(payload: dict, key: str) -> str:
@@ -804,6 +947,24 @@ def _optional_text(value: object) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _sanitize_filename(name: str) -> str:
+    candidate = name.replace("\\", "/").split("/")[-1].strip()
+    candidate = candidate or "upload"
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", candidate)
+
+
+def _strip_wrapping_quotes(text: str) -> str:
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+        return text[1:-1]
+    return text
+
+
+def _suggest_output_name(transcript_name: str) -> str:
+    base = re.sub(r"\.[^.]+$", "", transcript_name)
+    base = base or "bitebuilder_selects"
+    return f"{base}_bitebuilder.xml"
 
 
 if __name__ == "__main__":
