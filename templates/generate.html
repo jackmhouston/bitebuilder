@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="panel-grid">
+    <section class="panel panel-span-5">
+      <div class="section-head">
+        <h2>Kept for generate</h2>
+      </div>
+
+      <div class="stats-grid">
+        <article class="stat-card">
+          <span>Transcript</span>
+          <strong data-bind="transcriptName">No transcript loaded</strong>
+        </article>
+        <article class="stat-card">
+          <span>Premiere XML</span>
+          <strong data-bind="xmlName">No XML loaded</strong>
+        </article>
+        <article class="stat-card">
+          <span>Model</span>
+          <strong data-bind="modelName">Not selected</strong>
+        </article>
+        <article class="stat-card">
+          <span>Options</span>
+          <strong data-bind="optionsSummary">3</strong>
+        </article>
+        <article class="stat-card">
+          <span>Variant</span>
+          <strong data-bind="variantSummary">v1</strong>
+        </article>
+        <article class="stat-card">
+          <span>Speaker balance</span>
+          <strong data-bind="speakerBalanceSummary">balanced</strong>
+        </article>
+      </div>
+
+      <div class="summary-grid">
+        <article class="summary-card">
+          <span>Brief</span>
+          <p data-bind="briefPreview">No brief yet.</p>
+        </article>
+        <article class="summary-card">
+          <span>Context</span>
+          <p data-bind="contextPreview">No project context yet.</p>
+        </article>
+      </div>
+
+      <div class="section-head">
+        <h2>Accepted plan</h2>
+      </div>
+      <div id="acceptedPlanSummary" class="results"></div>
+
+      <div id="selectedBites" class="results"></div>
+    </section>
+
+    <section class="panel panel-span-7">
+      <div class="section-head">
+        <h2>Preview</h2>
+      </div>
+
+      <div id="timelinePreview" class="results"></div>
+
+      <div class="run-form">
+        <label>
+          <span>Variant name</span>
+          <input id="variantNameInput" type="text" value="v1">
+        </label>
+
+        <label>
+          <span>Options</span>
+          <input id="optionsInput" type="number" min="1" max="6" value="3">
+        </label>
+
+        <label>
+          <span>Speaker balance</span>
+          <select id="speakerBalanceSelect">
+            <option value="balanced">Balanced</option>
+            <option value="ceo">More CEO</option>
+            <option value="worker">More worker</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="actions">
+        <a class="button button-secondary" href="{{ url_for('project_chat') }}">Back</a>
+        <button id="previewShortlistButton" class="button button-secondary" type="button">Refresh candidates</button>
+        <button id="generateButton" class="button" type="button">Generate XML</button>
+      </div>
+
+      <div class="status-box" data-page-status>
+        Ready when files, brief, and model are set.
+      </div>
+
+      <div id="jobLog" class="results"></div>
+    </section>
+
+    <section class="panel panel-span-12">
+      <div class="section-head">
+        <h2>Working cuts</h2>
+      </div>
+      <div class="split-grid">
+        <section class="subpanel">
+          <div class="section-head">
+            <h3>Manual lane</h3>
+          </div>
+          <div id="manualLane" class="results"></div>
+          <div class="actions">
+            <button id="manualXmlButton" class="button button-secondary" type="button">Write XML from lane</button>
+          </div>
+        </section>
+
+        <section class="subpanel">
+          <div class="section-head">
+            <h3>Candidates</h3>
+          </div>
+          <div id="shortlistList" class="results"></div>
+        </section>
+      </div>
+    </section>
+
+    <section class="panel panel-span-12">
+      <div class="section-head">
+        <h2>Transcript</h2>
+      </div>
+      <label>
+        <span>Search transcript</span>
+        <input id="transcriptSearchInput" type="text" placeholder="Search text, speaker, or timecode">
+      </label>
+      <div id="transcriptBrowser" class="results"></div>
+    </section>
+  </div>
+{% endblock %}

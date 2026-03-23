@@ -1,0 +1,65 @@
+{
+  "name": "Solar Innovation Codex GPT-54 59s",
+  "origin": "Codex GPT-5.4 assisted editorial selection",
+  "target_seconds": [
+    45,
+    60
+  ],
+  "actual_duration_seconds": 58.8,
+  "selected_segments": [
+    {
+      "order": 1,
+      "index": 50,
+      "tc_in": "00:14:31:11",
+      "tc_out": "00:14:33:14",
+      "speaker": "Speaker 1",
+      "duration_seconds": 2.1,
+      "text": "solar is the tip of the iceberg."
+    },
+    {
+      "order": 2,
+      "index": 51,
+      "tc_in": "00:14:33:20",
+      "tc_out": "00:14:42:02",
+      "speaker": "Speaker 1",
+      "duration_seconds": 8.3,
+      "text": "Solar is one component of a complete solution for whether it's a homeowner or a business owner."
+    },
+    {
+      "order": 3,
+      "index": 14,
+      "tc_in": "00:05:25:22",
+      "tc_out": "00:05:41:12",
+      "speaker": "Speaker 1",
+      "duration_seconds": 15.6,
+      "text": "we just installed a commercial, solar installation in Indio, California, where we used a rooftop tracking system, and that tracking system actually enhanced the production of the solar panels by 40% in that application."
+    },
+    {
+      "order": 4,
+      "index": 18,
+      "tc_in": "00:06:14:17",
+      "tc_out": "00:06:24:08",
+      "speaker": "Speaker 1",
+      "duration_seconds": 9.6,
+      "text": "There may be a speed bump here, but again, we're competing against the utility and rates are inevitably going up and technology is inevitably getting better."
+    },
+    {
+      "order": 5,
+      "index": 19,
+      "tc_in": "00:06:24:10",
+      "tc_out": "00:06:37:14",
+      "speaker": "Speaker 1",
+      "duration_seconds": 13.2,
+      "text": "As a customer, you're if you're going to buy a solar system, your goal should really be energy independence first and then secondarily, how much can you save compared to your existing utility bill?"
+    },
+    {
+      "order": 6,
+      "index": 76,
+      "tc_in": "00:20:26:14",
+      "tc_out": "00:20:36:14",
+      "speaker": "Speaker 3",
+      "duration_seconds": 10.0,
+      "text": "So I don't see clean energy going away anytime soon, especially with the amount of innovation and efficiency that we've been getting from this technology."
+    }
+  ]
+}

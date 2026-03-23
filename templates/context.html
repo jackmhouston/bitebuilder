@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="panel-grid">
+    <section class="panel panel-span-12">
+      <div class="section-head">
+        <h2>Write</h2>
+      </div>
+
+      <label>
+        <span>Creative brief</span>
+        <textarea id="briefInput" rows="5" placeholder="45 to 60 second cut, open hooky, accessible but intelligent, strong close"></textarea>
+      </label>
+
+      <label>
+        <span>Project context</span>
+        <textarea id="contextInput" rows="9" placeholder="Audience, tone, client concerns, what the bites should prove, what to avoid, where the prototype should feel sharp"></textarea>
+      </label>
+
+      <label>
+        <span>Project notes</span>
+        <textarea id="projectNotesInput" rows="5" placeholder="Anything you want to remember about this job, the client, the current best cut, or what to test next"></textarea>
+      </label>
+
+      <div class="stats-grid">
+        <article class="stat-card">
+          <span>Transcript</span>
+          <strong data-bind="transcriptName">No transcript loaded</strong>
+        </article>
+        <article class="stat-card">
+          <span>Premiere XML</span>
+          <strong data-bind="xmlName">No XML loaded</strong>
+        </article>
+        <article class="stat-card">
+          <span>Project</span>
+          <strong data-bind="projectTitle">Untitled project</strong>
+        </article>
+      </div>
+
+      <div class="actions">
+        <a class="button button-secondary" href="{{ url_for('project_intake') }}">Back</a>
+        <a id="continueFromBriefButton" class="button" href="{{ url_for('project_chat') }}">Continue</a>
+      </div>
+
+      <div class="status-box" data-page-status>
+        Write the brief.
+      </div>
+    </section>
+  </div>
+{% endblock %}

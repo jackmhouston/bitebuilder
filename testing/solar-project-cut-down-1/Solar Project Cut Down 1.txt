@@ -1,0 +1,412 @@
+00:00:00:05 - 00:00:28:12
+Speaker 1
+The core mission of our company is to deliver the highest value energy products and services to our clients, and I think we can do that in three different ways. One, we have to really stay ahead of the curve with respect to technological innovation. So we have to be on the forefront of new things. You know, whether that's Tesla, Solar Roof or JF came out with an integrated solar roof product called Timberline.
+
+00:00:28:17 - 00:00:55:17
+Speaker 1
+You know, being in the early stages of of those product rollouts is really important because that enables us to give our customer base access to the newest and the latest. Sometimes we even see opportunities that those big manufacturers haven't seen because we're in the trenches where, you know, down on the ground and we see, hey, you know, Tesla Solar Roof might not work as well as Tesla thinks for these reasons.
+
+00:00:55:17 - 00:01:17:11
+Speaker 1
+What kind of modifications could we make, you know, on our level to actually improve the product? Or maybe, you know, refine it in some way and create something of our own that that solves a problem. So, you know, following the innovation and, you know, staying, staying ahead of the curve, so to speak, is important. Innovating internally ourselves is important.
+
+00:01:17:11 - 00:01:39:07
+Speaker 1
+And I think also just operating with integrity. You know, a lot of companies out there, they have a particular product or service that they want to sell. And no matter what your needs are, they want to, for lack of a better word, shove it down your throat, you know, and we want to look. And I think you probably saw this with Mike and your experience.
+
+00:01:39:09 - 00:01:51:15
+Speaker 1
+We want to offer customers the solution that makes the most sense for their particular scenario, not the solution that makes the most sense just because it's the easiest or, you know, has the highest margin in it.
+
+00:01:51:17 - 00:02:09:01
+Speaker 1
+We're a unique company in that we're we're sort of dabbling in developing some of our own products to a lot of contractors are strictly service oriented, and we're trying to take that knowledge from the field and translate it into things that, you know, we can develop and hopefully use to make a bigger impact.
+
+00:02:09:03 - 00:02:40:00
+Speaker 1
+I think I have a somewhat counterintuitive, view on the industry. A lot of people think it's about to die or fall off a cliff because we're losing all of these big tax subsidies. But I see things very differently. And the reason being that our grid is like this rickety old system that really can't handle the amount of energy generation that we're going to need to satisfy EV charging.
+
+00:02:40:02 - 00:03:16:16
+Speaker 1
+All the changes within the building codes that are now calling for electricity to be used for home heating, you know, all these different things are impacting, our industry and creating a greater need for electricity. And the grid itself is not going to be able to support that. So where I'm going with this is that I think you're going to see more distributed generation, meaning I don't think you're going to see you know, a plethora of utility scale solar plants out there, you know, continue to to come online.
+
+00:03:16:20 - 00:03:58:05
+Speaker 1
+What I think you're going to see is a more con does a more commercial and industrial solar applications. You're going to see a continued expansion of residential solar, just more. You're going to see solar in a distributed generation capacity, just because the grid is not going to be able to support bringing new power online. And that's also politically, we're not going to be able to support bringing new power online, because no matter what people want to install at a utility scale, it seems like there's always some sort of environmental movement that's going to stop that new production from coming online, whether it's, natural gas and nuclear, even solar, because of whatever impact it's
+
+00:03:58:05 - 00:04:10:15
+Speaker 1
+going to have on wildlife. So when you start to look at how difficult it is to get utility scale generation up online, I think that means more distributed generation, which in turn means more solar.
+
+00:04:10:17 - 00:04:22:09
+Speaker 1
+For the next few years, I think we're going to continue to see pretty significant increases in efficiency. Just from last year to this year, we're at like 7 or 8% increase in efficiency.
+
+00:04:22:11 - 00:04:48:16
+Speaker 1
+You look out 2 or 3 years, we're going to make up a lot of that tax credit loss just on cell efficiency improving. So that's one area where the technology is really going to be impactful. Another area is as you mentioned, I and I not so much on well, there's a place for AI in the generation side, but there's also a place for AI in building efficiency.
+
+00:04:48:16 - 00:05:13:20
+Speaker 1
+So meaning you know how your Hvac operates, how your lights operate, how, just in general, how your battery storage will, be used to knock out demand charges if you've got that in your rate plan or how that battery reserve is held to maybe play an arbitrage game with the time of use rates that you might have.
+
+00:05:14:02 - 00:05:25:20
+Speaker 1
+So I can do a lot with respect to managing your energy that I think is going to have a greater impact than AI. On the production side,
+
+00:05:25:22 - 00:05:41:12
+Speaker 1
+we just installed a commercial, solar installation in Indio, California, where we used a rooftop tracking system, and that tracking system actually enhanced the production of the solar panels by 40% in that application.
+
+00:05:41:14 - 00:05:57:15
+Speaker 1
+So that is something that hasn't really been done in California. Yeah, that was in fact the first installation of its type. And we're expecting that technology to have as much of an impact as the cell efficiency gains that we see
+
+00:05:57:19 - 00:06:06:12
+Speaker 1
+because of all this new demand for electricity and the lack of incentives to support utility scale solar, we're going to see rates go up.
+
+00:06:06:14 - 00:06:14:15
+Speaker 1
+You know, can we help a customer to generate their own power for less than what it would cost to buy grid electricity? Right.
+
+00:06:14:17 - 00:06:24:08
+Speaker 1
+There may be a speed bump here, but again, we're competing against the utility and rates are inevitably going up and technology is inevitably getting better.
+
+00:06:24:10 - 00:06:37:14
+Speaker 1
+As a customer, you're if you're going to buy a solar system, your goal should really be energy independence first and then secondarily, how much can you save compared to your existing utility bill?
+
+00:06:37:16 - 00:07:01:06
+Speaker 1
+The reason for that is that if you just focus on strictly on ROI and you're on a net metering plan, chances are that you're going to end up losing that plan at some point and getting a rude awakening. So my suggestion is always try to try to incorporate a battery, try to develop your own microgrid at home so you can operate independently.
+
+00:07:01:09 - 00:07:23:21
+Speaker 1
+The way that we install systems today, whether it's with the Dinosaur Orion system, the Powerwall, we have another battery called the point guard. Now, you know, all of these different batteries can operate as hybrid systems, meaning they can operate on grid or off grid. And you as the homeowner can control that or you as the building owner, if it's a commercial application, can control that.
+
+00:07:23:23 - 00:07:37:22
+Speaker 1
+Back to what we were discussing earlier, I think the rooftop tracking for commercial applications probably has the most potential. You know, that system alone offsets the tax credit loss. The
+
+00:07:37:22 - 00:07:54:16
+Speaker 1
+batteries are still in the early innings as far as technological development. Solar cells are later stage. So we're seeing, as I mentioned earlier, we're seeing, you know, five, six, 7% type of annual gains in cell efficiency with solar.
+
+00:07:54:18 - 00:08:09:18
+Speaker 1
+But we're seeing a greater leaps and bounds being made on the battery front. And I think a lot of that is not so much even the, efficiency of the battery, but just the cost of manufacturing. It has come down.
+
+00:08:09:21 - 00:08:20:17
+Speaker 1
+People see the headline and they see 30% tax credit going away. But when you really peel back the onion and you say, okay, well, what's going on on the technology side, is there going to be a way to make up for that?
+
+00:08:20:19 - 00:08:32:22
+Speaker 1
+I definitely think there is. I think new solar that comes online will be in a distributed capacity, meaning it'll be at the site that which that power is going to be consumed.
+
+00:08:33:00 - 00:08:48:04
+Speaker 1
+I see microgrids being the wave of the future. Again, going back to something I said earlier, the grid, as a whole is somewhat decrepit. You know, it's not able to handle the new capacity that's coming online.
+
+00:08:48:06 - 00:09:08:05
+Speaker 1
+And so the way around that is you build your own grid at your campus or your facility. And that could be, you know, when I say campus or facility as bigger, as small as you want to imagine, it could be somebody in their Adu that has a microgrid, or it could be UCI, you know, has their own microgrid.
+
+00:09:08:07 - 00:09:30:18
+Speaker 1
+You have to actually run a profitable business to be able to have the most impact on the environment. You know, if you're trying to do this for charity, you're not going to be in business for very long now. You have to operate with integrity and be fair. And at the end of the day, I think this comes back to our mission, which is how do we deliver the most value to our client.
+
+00:09:30:20 - 00:09:50:23
+Speaker 1
+We're not here to, you know, but say, hey, we've got the newest and latest, therefore we're going to charge you the most for it. We we want to be able to say here, here are all the options. Here's what's the here's what we believe is the most value to you and be able to make a fair margin on that.
+
+00:09:50:23 - 00:09:54:10
+Speaker 1
+And that will allow us to continue to do more of the same.
+
+00:09:54:12 - 00:10:15:02
+Speaker 1
+And climate change is the number one issue of our time. But right behind it is, you know, energy as a whole meaning, you know, we have a insatiable appetite for energy. And it's that is not going away anytime soon with all the changes that are taking place technologically right now.
+
+00:10:15:04 - 00:10:41:05
+Speaker 1
+I mean, EV charging alone, if we really advance to 100% EVs in California, with nearly 40 million people in the state, the amount of electricity that that's going to take is insane. And I don't think that the average person understands that that's not possible to it's not possible to satisfy that need with the current infrastructure that we have.
+
+00:10:41:07 - 00:11:08:07
+Speaker 1
+Just to put it, put it in perspective briefly, one Powerwall is 13.5 kW H. The average EV battery is like 7 or 8 times that size, so you're driving around with 7 or 8 powerwalls, you know, in your car and you're having to fill that up, you know, every few days, probably if you're commuting in California. So, there's a huge need.
+
+00:11:08:07 - 00:11:17:23
+Speaker 1
+And investors don't recognize that solar is going to have to be part of the mix even without tax credits and satisfying that need. Yeah.
+
+00:11:18:01 - 00:11:33:12
+Speaker 1
+Energy independence is the number one thing you should be thinking about when you install solar. So many people are chasing an ROI and you wouldn't believe how many customers come back, you know, a year or two years later and like, oh, the system was too small or I didn't.
+
+00:11:33:15 - 00:11:52:00
+Speaker 1
+I didn't size it quite big enough because they didn't realize, oh, their son was going to get a car and now it's an EV. Or, you know, they had an in-law move in and now there's more energy consumption in the house, or you know, there's all these different things that happen and your energy consumption. I hate to say it, but it's just going to go up and up and up.
+
+00:11:52:02 - 00:11:52:19
+Speaker 1
+Oh yeah,
+
+00:11:52:21 - 00:11:58:20
+Speaker 1
+I think virtual power plants are going to become the next big thing in energy.
+
+00:11:59:02 - 00:12:17:06
+Speaker 1
+I believe that virtual power plants are the wave of the future in the clean energy space. We're going to see homeowners and businesses all tied to this distributed energy grid and able to be called upon at different times when there are potential grid outages
+
+00:12:17:07 - 00:12:17:16
+Speaker 1
+today.
+
+00:12:17:16 - 00:12:51:14
+Speaker 1
+What's great is that you could actually afford as a homeowner, if you really wanted to do this, you could afford to expand your battery system to a level where you actually have a portion of it just designated for meeting those VPP events. And that's something that we're also contemplating for next year as sort of a way to help, you know, address this, this change in economics, you know, so the reason why that works is because you might need, you know, of course, you know, your labor is not really going to change.
+
+00:12:51:16 - 00:13:14:12
+Speaker 1
+Your, you know, all of the equipment that's necessary to integrate that battery into your home or into your commercial property is really not going to change. If you're just expanding the capacity, then it's much easier to do that on a and much lower cost on a per kilowatt hour basis than if you said, hey, I just want to put in a battery for VP purposes.
+
+00:13:14:12 - 00:13:20:02
+Speaker 1
+Like if you already have a need and then you expand it for VP, it actually makes a lot of sense for people.
+
+00:13:20:04 - 00:13:21:01
+Speaker 2
+It's cool.
+
+00:13:21:03 - 00:13:49:00
+Speaker 1
+Right after we took it over, we became the first contractor in Orange County to install the Tesla Solar Roof. We also became the first contractor to install the GAF Timberline Solar Roof. And, last year, you know, we were the first to install the rooftop tracking, for commercial applications. So, I like to, as I said earlier, try to stay at the forefront of these advancements in our industry.
+
+00:13:49:00 - 00:13:49:06
+Speaker 1
+And
+
+00:13:49:06 - 00:14:18:13
+Speaker 1
+I think it's oversimplified. So the general public hears solar today. It actually has a really bad connotation. I hate to say it, but there's a lot of door knockers out there, a lot of people that are trying to sell people as as I mentioned earlier and, you know, it's it's a sales, sales driven industry and it really should be more of a technology driven industry, in my opinion.
+
+00:14:18:13 - 00:14:31:09
+Speaker 1
+But where it's been the last few years, it's definitely sales driven, because I think of some of the financing products that were developed within it. But what do I wish people understood more? I wish they understood that
+
+00:14:31:11 - 00:14:33:14
+Speaker 1
+solar is the tip of the iceberg.
+
+00:14:33:20 - 00:14:42:02
+Speaker 1
+Solar is one component of a complete solution for whether it's a homeowner or a business owner.
+
+00:14:42:04 - 00:15:12:01
+Speaker 1
+It's your power generation. But within the solar ecosphere is the obviously battery systems, energy management, control systems. If you want to participate in a VP, you know, you have that option. There's even ventilation controls that can be incorporated into microgrids now. So there's all different sorts of components that can go along with solar and
+
+00:15:12:03 - 00:15:12:09
+Speaker 1
+when
+
+00:15:12:11 - 00:15:29:23
+Speaker 1
+people hear solar, they they think, oh, I don't want that because, you know, it's just going to break or it's just, you know, I don't want to it's they look at it as a one trick pony, like, it's okay, that's that's a I don't want panels on my roof.
+
+00:15:30:01 - 00:15:31:17
+Speaker 1
+Like I'll just buy the electricity from the grid.
+
+00:15:31:23 - 00:15:38:17
+Speaker 1
+But if they really looked at it holistically and they saw all the other features combined, it's a no brainer for most people.
+
+00:15:38:19 - 00:15:38:21
+Speaker 3
+Were
+
+00:15:38:22 - 00:15:57:16
+Speaker 3
+installing a dinosaur Orion system to batteries in 19.9kW hour battery capacity, and that's also combined with a 435 watt on the panels that are roughly 27 of them. So the total system would be 11.7kW hours.
+
+00:15:57:18 - 00:16:06:14
+Speaker 3
+The size of the system is 11.7kW, which comes out to around 435W each of 27 them all together.
+
+00:16:06:16 - 00:16:16:16
+Speaker 3
+We're currently uninstalling an old system, which was roughly a four kilowatt in terms of solar capacity, and now we're upgrading to an 11.7kW system.
+
+00:16:16:16 - 00:16:24:03
+Speaker 3
+So it's definitely more than double the size, almost triple the size in terms of the power that we're going to generate in this home.
+
+00:16:24:05 - 00:16:36:15
+Speaker 3
+The expected payback on a system varies, of course, depending on the battery size, the amount of panels, and the current electrical bill in comparison. But I believe going through the data on your particular home was roughly six years.
+
+00:16:36:17 - 00:16:48:14
+Speaker 3
+I will say we have a great reputation. The best way is just go on Google and check us out. You see all the great reviews. Plus we've done thousands of projects. I've been in business for over 30 years, so I think that says something,
+
+00:16:48:16 - 00:16:59:04
+Speaker 3
+you know, during a typical installation process typically is around four days. The first stage is getting all the materials to arrive, coming up with the game plan, start installing on the roof.
+
+00:16:59:04 - 00:17:16:09
+Speaker 3
+The second day is where most, like you're going to start the panel. So we get the roof and back all complete. The third day will be more of the wiring conduit. Get everything set up on the main service panel. So the fourth day we can tie everything in with the bed or inverter and have the whole system work together.
+
+00:17:16:11 - 00:17:37:20
+Speaker 3
+Yeah. So in your particular home you have a very steep slope. And of course that's not the greatest. When you know the sun is on the opposite end of the home, you get all that shade. So to compensate for that, we have these special footings, with the racking that goes on top with the poles. And that should give you, like, a nice 25 degree angle, to get as much solar production as possible.
+
+00:17:37:22 - 00:18:05:03
+Speaker 3
+So one of the benefits of working with McCormick is that we do have a great team, and we do have a whole department that just the permitting working with the engineers, you know, when everything gets installed, we have a separate department that all they focus on is, is working with the utility company to get everything connected. And someone will call PTO permission to operate and that will make the process way easier for the consumer, because we'll deal with all that pain and dealing with the utility company.
+
+00:18:05:03 - 00:18:24:14
+Speaker 3
+One of the benefits of having the 19.9 dinosaur rating system is the fact that you can monitor almost everything. You have the power that's coming from the DC solar system. You also can monitor how much capacity the battery has at a given time, and also monitor how much is going back to the grid or how much you're pulling from the grid.
+
+00:18:24:14 - 00:18:32:08
+Speaker 3
+So you can really monitor all aspects of consumption, storage and the integration with the utility company.
+
+00:18:32:10 - 00:18:46:21
+Speaker 3
+The way the battery system works is that there's different phases and you want to keep it as self consumption. So when there's sunlight, you want to have the solar panels cover the electrical load at your home and all the excess energy will go to the battery.
+
+00:18:46:21 - 00:19:05:16
+Speaker 3
+And that will pretty much increase until it becomes nighttime. So you're not going to have the solar energy to rely on. And you can use the storage of that battery. And that should last you all the way through the night. Then a cycle begins on daytime, where the solar being produced will cover the electrical loads at home and the access to the battery.
+
+00:19:05:16 - 00:19:13:11
+Speaker 3
+And that way you don't have to rely on the grid. So it's a nice full cycle of storage usage. Back to the grid.
+
+00:19:13:13 - 00:19:31:04
+Speaker 3
+The way the battery system works is that there's different stages where things get combined. So you have your solar panels that produce DC power, and that will cover the load electrical load. During the daytime, the excess energy from the solar panels will go into the battery, to start increasing to storage capacity.
+
+00:19:31:10 - 00:19:59:17
+Speaker 3
+Once sunset comes about, you're not producing any more from the sun. The excess power from the battery are going to cover the electrical loads at night. And then that should pretty much drain around 10 to 15%. So when the daytime arrives again, the PV will start covering your electrical loads and start charging the battery. You have this nice cycle of, increase in capacity, discharging and trying to stay away from the grid as much as possible.
+
+00:19:59:19 - 00:20:26:12
+Speaker 3
+I'm very optimistic in terms of where solar is going to be in the next ten years. Just looking at trends of the efficiency of these panels. Batteries are becoming a lot more affordable since people are adopting it a lot more. And we're also at a stage where if you look at California or the federal government is really pushing for like a go Green program to try to get off fossil fuels.
+
+00:20:26:14 - 00:20:36:14
+Speaker 3
+So I don't see clean energy going away anytime soon, especially with the amount of innovation and efficiency that we've been getting from this technology.
+
+00:20:36:16 - 00:20:42:09
+Speaker 3
+Solar is pretty much a no brainer because at the end of the day, it all comes down to finance.
+
+00:20:42:10 - 00:20:49:23
+Speaker 3
+The end goal is how can I lower my electrical bill? And you got to look of how much energy you're consuming during a given day.
+
+00:20:49:23 - 00:21:13:06
+Speaker 3
+So if you have $150 electrical bill a month, you may not be incentivized to get solar, because how much of savings are you going to get? But most homes, can vary between 300 and $400. So if they can cut their logical bill in half, then why wouldn't you want to save money? What makes a little bit difficult is the initial investment that you got to put up.
+
+00:21:13:08 - 00:21:19:02
+Speaker 3
+And then play the long game of, okay, I'm going to recover this within six years.
+
+00:21:19:04 - 00:21:33:15
+Speaker 3
+If it's hard to say. So I feel like most people will get solar initially is because they're looking at their finances and they're looking, okay, this saves me money, but a great benefit from it is that it is clean energy. So it's kind of a nice win win.
+
+00:21:33:15 - 00:21:51:01
+Speaker 3
+So you have your own selfish interest of trying to be financially, smart about, you know, where your money's coming and going. But if you can also, the icing on the cake that you're helping the environment, then it's it's a nice win.
+
+00:21:51:03 - 00:22:16:10
+Speaker 2
+Okay, so first of all, you have your smart controller device here. Everything is integrated into your smart controller device, such as getting power from the main panel, your solar panel, your inverter that is on the other side of the house. That's all here. This switch here turns on and off the inverter inverter one. You also have a 200 amp main breaker which controls your subpanel and getting power from the main panel on the left hand side.
+
+00:22:16:12 - 00:22:48:02
+Speaker 2
+Everything all the wiring have to get into here. After you have your critical load center backed up on 100 amps, here you have your EV charger, your, fuel pump. Here you have your office lights, refrigerator, kitchen lights, TV room, and I think dining room, dining room, plugs and outlets here. And what is the critical load center? Critical load center is the center that the, back, the panel that you are going to want to have power from your batteries during a power outage.
+
+00:22:48:07 - 00:22:56:17
+Speaker 2
+So these are these are the circuits that are going to be having power during a power outage when you don't have electricity coming in from your electrical company.
+
+00:22:56:19 - 00:23:08:00
+Speaker 2
+Okay. So here you have your 100 hour breaker which is tied into your smart controller device. This powers up the smart controller device and the Subpanel when you have power coming from your electrical company.
+
+00:23:08:06 - 00:23:25:17
+Speaker 2
+But if you would flip this breaker off and turn off the 200 amp breaker that you have inside your Smart controller device, you will see that you still have power going into your sub panel coming from the batteries. Those are going to be kicked on during a power outage and that's why it's a critical load center, because those are the ones you want.
+
+00:23:25:17 - 00:23:41:20
+Speaker 2
+Power such as the fridge, your office space, lights, your TV. Wi-Fi does have to be backed up just because the system runs on Wi-Fi 24 seven. So you would need to have power going to your Wi-Fi at all times.
+
+00:23:41:22 - 00:23:55:23
+Speaker 2
+So your smart controller device is the device and the brain of the whole system. Everything gets tied into your your inverter, your sub panel, the 200 M main breaker connected to your 100 amp breaker inside your, main panel.
+
+00:23:56:01 - 00:24:12:13
+Speaker 2
+This is the brain of the operation. So this tells the system between night and day when there's power coming from the electrical company, when there's a blackout, when to distribute enough power for the sub panel. And the main panel so they can be charged using the solar and the batteries
+
+00:24:12:15 - 00:24:21:19
+Speaker 2
+for energy. How it usually works that you're going to be getting a line one and line two from the electrical company, which gives you 240 into your main panel.
+
+00:24:21:21 - 00:24:48:16
+Speaker 2
+But because of the solar system, we are using a soft power mode, which is just going to be using the solar to cover the energy inside the house. That way you're not drawing any energy from the electrical company when that is. When that is done, the batteries will be charging using the solar and as well, compensating for the power that is being used inside the house at all times, such as the refrigerator, AC unit lights that you use every other day.
+
+00:24:48:16 - 00:25:14:10
+Speaker 2
+Every day, washer and dryers, things like that, big appliances, stoves, as well as ovens. So it uses the solar first. They deplete the solar. Once that's done, the batteries will kick on and start distributing power into the smart controller device, into your sub panel and your main panel. That way, you're not pulling any electricity from the electrical grid
+
+00:25:14:12 - 00:25:16:07
+Speaker 2
+and action.
+
+00:25:16:08 - 00:25:47:14
+Speaker 2
+So right here you have your inverter. You have your AP transmitter. This inverter, gets connected to the BTU and all four batteries that you have here. This inverter converts all DC energy into AC energy. So it gets sent to your smart controller device. So the smart controller device could distribute it between the sub panel and the main panel and the whole home, inside the inverter, the PDU gets connected through number six wiring inside here, and it tells it when it's time to start charging.
+
+00:25:47:14 - 00:26:04:12
+Speaker 2
+It will tell the to use sorry charging it or up the batteries to start distributing. If it's nighttime daytime it would let it know. That way it can start sending power from the inverter, converting from DC power to AC power, and sending back to the home and to the grid.
+
+00:26:04:14 - 00:26:07:08
+Speaker 2
+So this is the PDU. This is the brain of the batteries.
+
+00:26:07:08 - 00:26:28:03
+Speaker 2
+This is what tells the batteries when to start distributing, when to start charging, when to when it's nighttime, when it's daytime, when they need more power inside the house and they're using more electrical in the house for they could distribute more energy. This is your battery number one, number two, number three and number four. The each battery is five kilowatts per hour.
+
+00:26:28:09 - 00:26:37:23
+Speaker 2
+So you have a 20 kilowatt per hour system here with four batteries and a BTU all tied into your inverter.
+
+00:26:38:01 - 00:26:53:03
+Speaker 2
+So the sun rays and sunlight gets converted by the AP transmitters. So they can be used as an optimizer. That way it sends the solar and DC current down through here, or it can be captured through the AP transmitter up to the inverter.
+
+00:26:53:03 - 00:27:14:22
+Speaker 2
+From the inverter, it gets shot to the batteries so they can be charged or discharged once they're discharging, or you're mass producing and charging the batteries and also using it for the inside of the home. It's the inverter converts the DC energy to AC current and gets sent back to the main paddle, paddle and smart controller device. Great.
+
+00:27:15:01 - 00:27:30:20
+Speaker 2
+And that goes underneath the house? Yes, correct. We have 70ft of rigid PVC going from this side of the wall from the inverter inch and a quarter running underneath the house, going straight across the house to the right and then back to the main panel.
+

@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="panel-grid">
+    <section class="panel panel-span-8">
+      <div class="section-head">
+        <h2>Current XML</h2>
+      </div>
+
+      <div id="results" class="results"></div>
+    </section>
+
+    <section class="panel panel-span-4">
+      <div class="section-head">
+        <h2>Next move</h2>
+      </div>
+
+      <div class="actions action-stack">
+        <a class="button button-secondary" href="{{ url_for('project_generate') }}">Back</a>
+        <button id="rerunSameFilesButton" class="button button-secondary" type="button">Run again</button>
+        <button id="openFolderButton" class="button button-secondary" type="button">Open output folder</button>
+        <button id="startOverButton" class="button button-link" type="button">Start over</button>
+      </div>
+
+      <div class="section-head">
+        <h3>Another angle</h3>
+      </div>
+
+      <div class="actions action-stack">
+        <button class="button button-secondary" type="button" data-rerun-style="make it shorter">Shorter</button>
+        <button class="button button-secondary" type="button" data-rerun-style="make it stranger">Stranger</button>
+        <button class="button button-secondary" type="button" data-rerun-style="make it more technical">More technical</button>
+        <button class="button button-secondary" type="button" data-rerun-style="make it more commercial">More commercial</button>
+      </div>
+
+      <div class="status-box" data-page-status>
+        No run yet.
+      </div>
+
+      <a class="button button-secondary" href="{{ url_for('project_logs') }}">Session log</a>
+    </section>
+
+    <section class="panel panel-span-12">
+      <div class="section-head">
+        <h2>Compare runs</h2>
+      </div>
+      <div class="field-grid">
+        <label>
+          <span>Left run</span>
+          <select id="compareLeftSelect"></select>
+        </label>
+        <label>
+          <span>Right run</span>
+          <select id="compareRightSelect"></select>
+        </label>
+      </div>
+      <div id="comparePanel" class="results"></div>
+    </section>
+  </div>
+{% endblock %}

@@ -5,19 +5,19 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "bitebuilder"
 version = "0.1.0"
-description = "Local-first CLI and GUI for transcript-driven Premiere bite selects."
+description = "AI-assisted soundbite selection for Premiere Pro workflows"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = [
+  "Flask>=3.0.0",
   "requests>=2.31,<3",
 ]
 
 [project.scripts]
-bitebuilder = "bitebuilder.cli:main"
-bitebuilder-gui = "bitebuilder.gui_launcher:main"
+bitebuilder = "bitebuilder:main"
 
 [tool.setuptools]
-package-dir = {"" = "src"}
+py-modules = ["bitebuilder", "webapp"]
 
 [tool.setuptools.packages.find]
-where = ["src"]
+include = ["generator", "llm", "parser"]

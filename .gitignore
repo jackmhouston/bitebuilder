@@ -5,9 +5,12 @@ __pycache__/
 .ruff_cache/
 .venv/
 venv/
+.playwright-cli/
 dist/
 build/
 *.egg-info/
 *.xml
 !sample-data/*.xml
-
+output/
+test_output/
+*.log

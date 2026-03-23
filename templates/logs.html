@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="panel-grid">
+    <section class="panel panel-span-12">
+      <div class="section-head">
+        <h2>Session log</h2>
+      </div>
+
+      <label>
+        <span>Run</span>
+        <select id="logsRunSelect"></select>
+      </label>
+
+      <div id="logsPanel" class="results"></div>
+
+      <div class="actions">
+        <a class="button button-secondary" href="{{ url_for('project_export') }}">Back</a>
+      </div>
+    </section>
+  </div>
+{% endblock %}

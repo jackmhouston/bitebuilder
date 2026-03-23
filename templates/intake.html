@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="panel-grid">
+    <section class="panel panel-span-12">
+      <div class="section-head">
+        <h2>Upload</h2>
+      </div>
+
+      <label>
+        <span>Project title</span>
+        <input id="projectTitleInput" type="text" placeholder="Solar cut test">
+      </label>
+
+      <div class="field-grid">
+        <label>
+          <span>Transcript file</span>
+          <input id="transcriptFile" type="file" accept=".txt,.md,.text">
+        </label>
+        <label>
+          <span>Premiere XML file</span>
+          <input id="xmlFile" type="file" accept=".xml,.fcpxml,.txt">
+        </label>
+      </div>
+
+      <div class="stats-grid">
+        <article class="stat-card">
+          <span>Transcript</span>
+          <strong data-bind="transcriptName">No transcript loaded</strong>
+        </article>
+        <article class="stat-card">
+          <span>Premiere XML</span>
+          <strong data-bind="xmlName">No XML loaded</strong>
+        </article>
+        <article class="stat-card">
+          <span>Segments</span>
+          <strong data-bind="segmentCount">0</strong>
+        </article>
+        <article class="stat-card">
+          <span>Source</span>
+          <strong data-bind="sourceAssetName">Unknown</strong>
+        </article>
+      </div>
+
+      <div class="actions">
+        <button id="saveProjectButton" class="button button-secondary" type="button">Save project file</button>
+        <label class="button button-secondary file-button">
+          <span>Load project file</span>
+          <input id="projectFileInput" type="file" accept=".json,.bitebuilder-project.json">
+        </label>
+        <button id="startFreshButton" class="button button-secondary" type="button">Start fresh</button>
+        <a id="continueFromIntakeButton" class="button" href="{{ url_for('project_brief') }}">Continue</a>
+      </div>
+
+      <div class="status-box" data-page-status>
+        Load the transcript and the Premiere XML.
+      </div>
+    </section>
+  </div>
+{% endblock %}
