@@ -1,0 +1,254 @@
+{
+  "name": "BiteBuilder Conversational Edit Workspace",
+  "description": "BiteBuilder already has the core XML generation logic, transcript parsing, shortlist building, and project JSON save/load support. The current web UX is the bottleneck. The editor has to front-load too much manual context, the chat surface feels detached from bite selection, and the final assembly/export flow does not feel like one continuous editorial loop.",
+  "branchName": "ralph/bitebuilder-conversational-edit-workspace",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Generate a project-understanding summary from uploaded material",
+      "description": "As an editor, I want BiteBuilder to infer a short summary from the transcript, XML, and one brief so I do not have to type a full project context memo before the model can help.",
+      "acceptanceCriteria": [
+        "Add an intake summary generation path that accepts transcript text, XML text, and one short brief.",
+        "The returned understanding is a short paragraph written in editorial language, not a raw field dump.",
+        "The summary can be generated without requiring the user to fill the long-form project context field first.",
+        "Summary generation failures return recoverable error text and do not corrupt existing project state.",
+        "Tests pass.",
+        "Typecheck passes."
+      ],
+      "priority": 1,
+      "passes": false,
+      "labels": [],
+      "dependsOn": []
+    },
+    {
+      "id": "US-002",
+      "title": "Replace context-heavy intake with guided brief plus summary review",
+      "description": "As an editor, I want the intake step to ask for only the minimum necessary input and then show me what the model thinks the project is about before I move into chat.",
+      "acceptanceCriteria": [
+        "The intake flow requires transcript upload, XML upload, project title, and one short brief before the user continues.",
+        "The long project-context textarea is removed from the required first-run path.",
+        "The intake screen displays the generated short summary and lets the user approve or lightly edit it before chat.",
+        "The primary continue action stays disabled until the required inputs are present and the summary has either been reviewed or explicitly skipped.",
+        "Existing preset loading still hydrates the intake flow correctly.",
+        "Verify in browser using dev-browser skill.",
+        "Tests pass.",
+        "Typecheck passes."
+      ],
+      "priority": 1,
+      "passes": false,
+      "labels": [],
+      "dependsOn": [
+        "US-001"
+      ]
+    },
+    {
+      "id": "US-003",
+      "title": "Persist approved summary and intake metadata in project JSON files",
+      "description": "As an editor, I want the inferred summary and intake decisions saved with the project so I can stop rebuilding context every time I reopen a cut.",
+      "acceptanceCriteria": [
+        "Exported `.bitebuilder-project.json` files include the generated summary, approved summary text, brief, and related intake metadata.",
+        "Loading a saved project restores the summary review state without data loss.",
+        "Loading older project JSON files that do not have the new fields still works.",
+        "The save/load behavior remains local-file-based and does not require a backend database.",
+        "Tests pass.",
+        "Typecheck passes."
+      ],
+      "priority": 1,
+      "passes": false,
+      "labels": [],
+      "dependsOn": [
+        "US-001"
+      ]
+    },
+    {
+      "id": "US-004",
+      "title": "Render assistant replies as natural language with selectable bite chips",
+      "description": "As an editor, I want the assistant to answer in normal prose while highlighting referenced bites inline so I can keep useful selections without switching mental modes.",
+      "acceptanceCriteria": [
+        "Assistant replies continue to render as readable natural language paragraphs.",
+        "Transcript segment references inside assistant replies render as visually distinct inline chips or buttons.",
+        "Clicking an inline bite chip updates the saved state for that bite without clearing the current chat thread.",
+        "Inline chip styling reflects the bite state at render time, including neutral, kept, opening, banned, and lane states when relevant.",
+        "The interaction remains keyboard accessible.",
+        "Verify in browser using dev-browser skill.",
+        "Tests pass.",
+        "Typecheck passes."
+      ],
+      "priority": 1,
+      "passes": false,
+      "labels": [],
+      "dependsOn": []
+    },
+    {
+      "id": "US-005",
+      "title": "Add response-level save, reject, and revise actions",
+      "description": "As an editor, I want to tell the copilot “keep this direction,” “that hook does not work,” or “be more creative” directly from the response I am looking at so iteration feels fast and grounded.",
+      "acceptanceCriteria": [
+        "Each assistant response exposes actions to save the response as guidance, reject or supersede it, and continue iterating from that response.",
+        "Rejecting or revising a response captures lightweight correction text tied to that response instead of forcing the user to restate all context.",
+        "The next chat request includes the approved guidance and the latest correction text in a deterministic way.",
+        "The chat log visually distinguishes current guidance from superseded guidance.",
+        "Verify in browser using dev-browser skill.",
+        "Tests pass.",
+        "Typecheck passes."
+      ],
+      "priority": 1,
+      "passes": false,
+      "labels": [],
+      "dependsOn": [
+        "US-004"
+      ]
+    },
+    {
+      "id": "US-006",
+      "title": "Add a section-notes side panel for editorial memory",
+      "description": "As an editor, I want corrections and accepted guidance to accumulate in a side panel by section so I can steer hook, middle, and ending decisions without retyping them every turn.",
+      "acceptanceCriteria": [
+        "The chat screen includes a side panel with at least `Global`, `Hook`, `Middle`, and `Ending` note buckets.",
+        "The user can save text from a chat response into one of these buckets or type directly into the side panel.",
+        "Saved section notes are shown separately from freeform project notes.",
+        "Subsequent chat and generation requests include the saved section notes in a stable prompt order.",
+        "Side-panel content persists in the existing local project JSON save/load flow.",
+        "Verify in browser using dev-browser skill.",
+        "Tests pass.",
+        "Typecheck passes."
+      ],
+      "priority": 1,
+      "passes": false,
+      "labels": [],
+      "dependsOn": [
+        "US-005"
+      ]
+    },
+    {
+      "id": "US-007",
+      "title": "Unify bite state across chat, transcript, shortlist, and manual assembly",
+      "description": "As an editor, I want a bite I save or reject in one place to immediately mean the same thing everywhere else so the tool feels coherent.",
+      "acceptanceCriteria": [
+        "Saving or rejecting a bite from chat updates the same source-of-truth state used by the transcript browser, candidate shortlist, accepted plan, and manual lane.",
+        "A bite cannot end up simultaneously marked kept and banned.",
+        "Opening, must-use, kept, banned, locked, and lane states remain internally consistent after repeated edits.",
+        "The app does not create a second independent state model just for chat-selected bites.",
+        "Verify in browser using dev-browser skill.",
+        "Tests pass.",
+        "Typecheck passes."
+      ],
+      "priority": 1,
+      "passes": false,
+      "labels": [],
+      "dependsOn": [
+        "US-004"
+      ]
+    },
+    {
+      "id": "US-008",
+      "title": "Turn the chat screen into the primary refinement workspace",
+      "description": "As an editor, I want the chat step to feel like the main place where the cut gets shaped, not just a text box before the real work begins.",
+      "acceptanceCriteria": [
+        "The chat screen presents the chat log, project-understanding summary, section-notes side panel, and the most relevant saved bite state in one coherent layout.",
+        "The page shows the current project title, brief, approved summary, selected model, and core chat actions without requiring navigation away from the screen.",
+        "The staged navigation remains `Upload -> Write -> Chat -> Generate`, but the chat page becomes the main refinement step.",
+        "The layout remains usable on the current local browser UI without introducing media playback.",
+        "Verify in browser using dev-browser skill.",
+        "Tests pass.",
+        "Typecheck passes."
+      ],
+      "priority": 4,
+      "passes": false,
+      "labels": [],
+      "dependsOn": [
+        "US-002",
+        "US-004",
+        "US-006",
+        "US-007"
+      ]
+    },
+    {
+      "id": "US-009",
+      "title": "Make the working assembly board reflect the real A>B cut order",
+      "description": "As an editor, I want the generate step to show the current working bite order clearly so I can refine the actual sequence that will become XML.",
+      "acceptanceCriteria": [
+        "The working assembly view clearly shows the current A>B bite order that will feed export.",
+        "The user can add, remove, reorder, and lock bites in the assembly without losing accepted chat guidance.",
+        "Each bite in the working order shows enough context to identify why it is there, such as speaker, timecode, and selection rationale when available.",
+        "The UI clearly distinguishes the manual assembly from candidate suggestions.",
+        "Verify in browser using dev-browser skill.",
+        "Tests pass.",
+        "Typecheck passes."
+      ],
+      "priority": 4,
+      "passes": false,
+      "labels": [],
+      "dependsOn": [
+        "US-007"
+      ]
+    },
+    {
+      "id": "US-010",
+      "title": "Tighten export around the visible working outcome",
+      "description": "As an editor, I want the final export step to feel like the natural end of the same editing loop, not a separate tool that ignores the choices I just made.",
+      "acceptanceCriteria": [
+        "The export area clearly shows the exact working order that will be passed into XML generation.",
+        "The user can return from export to chat or assembly and keep the current project state intact.",
+        "The result view explains how the exported cut relates to recent chat direction and saved guidance.",
+        "XML generation continues to use the existing generator and timecode logic, with only adapter-level changes allowed for the new UX flow.",
+        "Verify in browser using dev-browser skill.",
+        "Tests pass.",
+        "Typecheck passes."
+      ],
+      "priority": 4,
+      "passes": false,
+      "labels": [],
+      "dependsOn": [
+        "US-009"
+      ]
+    },
+    {
+      "id": "US-011",
+      "title": "Feed approved summary and section notes into all model-facing flows",
+      "description": "As an editor, I want the same approved project understanding and section guidance to influence chat, shortlist building, and final generation so the tool does not feel forgetful.",
+      "acceptanceCriteria": [
+        "Chat prompt construction uses the approved summary, section notes, saved response guidance, and recent message history.",
+        "Candidate shortlist generation uses the approved summary and section notes in addition to the brief.",
+        "Final generation uses the same approved summary and section notes so the export path honors the chat workflow.",
+        "Prompt assembly keeps a deterministic field order so saved projects replay predictably.",
+        "Tests pass.",
+        "Typecheck passes."
+      ],
+      "priority": 4,
+      "passes": false,
+      "labels": [],
+      "dependsOn": [
+        "US-001",
+        "US-006"
+      ]
+    },
+    {
+      "id": "US-012",
+      "title": "Add regression coverage for the conversational editing loop",
+      "description": "As a maintainer, I want fixture-backed coverage for the new UX state and prompt wiring so the workflow can evolve without silently breaking.",
+      "acceptanceCriteria": [
+        "Add or update fixture-backed tests for summary generation state, chat bite-chip rendering inputs, section-note persistence, and project JSON round-tripping.",
+        "Existing smoke tests continue to run without a live Ollama dependency.",
+        "At least one test verifies that new saved-project fields are backward compatible with older project JSON files.",
+        "Tests pass.",
+        "Typecheck passes."
+      ],
+      "priority": 4,
+      "passes": false,
+      "labels": [],
+      "dependsOn": [
+        "US-003",
+        "US-005",
+        "US-006",
+        "US-007",
+        "US-011"
+      ]
+    }
+  ],
+  "metadata": {
+    "createdAt": "2026-03-24T00:13:48.367Z",
+    "version": "1.0.0",
+    "sourcePrd": "prd-bitebuilder-conversational-edit-workspace.md"
+  }
+}

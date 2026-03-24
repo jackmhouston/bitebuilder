@@ -57,6 +57,15 @@ def frames_to_tc(frames: int, timebase: int = 24) -> str:
     return f"{hh:02d}:{mm:02d}:{ss:02d}:{ff:02d}"
 
 
+def normalize_timecode(tc: str, timebase: int = 24) -> str:
+    """
+    Normalize a timecode by converting to frames and back.
+
+    Useful for deterministic fixtures where round-trip consistency is required.
+    """
+    return frames_to_tc(tc_to_frames(tc, timebase), timebase)
+
+
 def ticks_per_frame(timebase: int = 24, ntsc: bool = True) -> int:
     """
     Calculate Premiere Pro ticks per frame for a given rate.

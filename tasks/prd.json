@@ -1,0 +1,128 @@
+{
+  "name": "BiteBuilder Beta Stabilization and Quality Enhancements",
+  "branchName": "feature/bitebuilder-beta-stabilization-and-quality-enhancements",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Surface and classify CLI and web errors",
+      "description": "As a solo filmmaker, I want clear, actionable errors for input and runtime failures so I can recover quickly without restarting from scratch.",
+      "acceptanceCriteria": [
+        "Return structured, user-facing errors for missing or invalid transcript file, invalid XML, malformed brief, and unsupported file content",
+        "Include error type, expected input format, and next action in every validation error",
+        "Log errors with stable machine-readable error codes in both CLI and Flask logs",
+        "Return non-zero CLI exit status for hard failures and print concise remediation text",
+        "Report recoverable status when partial progress exists (for example XML parsed but selection failed)"
+      ],
+      "priority": 1,
+      "passes": true,
+      "dependsOn": [],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-002",
+      "title": "Validate transcript timecodes before LLM calls",
+      "description": "As a filmmaker, I want transcript timecodes checked and normalized before generation so output stays aligned and sequence generation is safe.",
+      "acceptanceCriteria": [
+        "Validate all transcript timecode formats against the expected schema",
+        "Reject invalid values with line-level and context references",
+        "Validate start/end ordering with explicit handling for zero-length or reversed ranges",
+        "Detect overlap or impossible transitions and reject or normalize according to policy",
+        "Preserve round-trip consistency across timecode string, frame index, and seconds in deterministic fixtures",
+        "Fail deterministically on invalid input and produce no partial XML output"
+      ],
+      "priority": 2,
+      "passes": true,
+      "dependsOn": [],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-003",
+      "title": "Improve prompt quality and schema constraints",
+      "description": "As an editor, I want improved prompt guardrails so selected bites are timely, relevant, and schema-compliant.",
+      "acceptanceCriteria": [
+        "Define output schema constraints in the prompt",
+        "Include valid and invalid example outputs for LLM guidance",
+        "Require selected segments to align exactly to transcript timecodes",
+        "Require confidence or equivalent quality metadata for each selected bite",
+        "Document and configure deterministic seed/temperature settings for repeatability",
+        "Include fallback policy for no valid candidate results using an explicit no-op structure"
+      ],
+      "priority": 3,
+      "passes": false,
+      "dependsOn": [
+        "US-002"
+      ]
+    },
+    {
+      "id": "US-004",
+      "title": "Add LLM response validation and one-shot recovery",
+      "description": "As a solo filmmaker, I want generated LLM output validated before write so broken XML is prevented and failures are recoverable.",
+      "acceptanceCriteria": [
+        "Validate LLM JSON shape before downstream XML generation",
+        "Validate each selected segment against transcript bounds and segment definitions",
+        "Return a specific parse or validation error and skip sequence writing when validation fails",
+        "Perform one automatic bounded recovery retry using a correction prompt",
+        "Show retry status and validation failure reason in the UI"
+      ],
+      "priority": 4,
+      "passes": false,
+      "dependsOn": [
+        "US-002",
+        "US-003"
+      ]
+    },
+    {
+      "id": "US-005",
+      "title": "Improve web UI workflow status and recoverability",
+      "description": "As a user in the Flask UI, I want clearer step progression and recoverable interactions so I can continue editing without re-uploading input.",
+      "acceptanceCriteria": [
+        "Display step markers for Upload, Validate, Preview/Confirm, Generate, and Download",
+        "Show inline input errors and panel-level messaging with Fix inputs and Try again actions",
+        "Expose running operation snapshots for received, validating, prompting, generating, and finalizing states",
+        "Preserve user input values across recoverable failures",
+        "Allow resume at each step without re-uploading transcript/XML content"
+      ],
+      "priority": 5,
+      "passes": false,
+      "dependsOn": []
+    },
+    {
+      "id": "US-006",
+      "title": "Add fixture-backed deterministic CLI and web integration tests",
+      "description": "As an engineering owner, I want end-to-end integration tests for successful and failing flows so regressions are detected before release.",
+      "acceptanceCriteria": [
+        "Add CLI fixture test for transcript + XML + brief producing expected deterministic output shape",
+        "Add UI orchestration tests for success and validation-failure paths using mocked LLM responses",
+        "Add tests for malformed transcript and invalid XML fixtures",
+        "Add tests for timecode edge cases with expected structured error payloads",
+        "Ensure tests run without local Ollama by mocking model responses"
+      ],
+      "priority": 6,
+      "passes": false,
+      "dependsOn": [
+        "US-004",
+        "US-005"
+      ]
+    },
+    {
+      "id": "US-007",
+      "title": "Improve output determinism and metadata traceability",
+      "description": "As a developer, I want stable outputs and trace metadata so repeated runs are debuggable and reproducible.",
+      "acceptanceCriteria": [
+        "Enforce deterministic ordering for segment candidate selection",
+        "Include metadata block in generated sequence XML with source hashes and input versions",
+        "Expose run metadata in CLI and UI outputs including timestamp, input descriptors, parser/validator versions, and model id",
+        "Guarantee identical output filename and content for same fixture inputs and same mock model output"
+      ],
+      "priority": 7,
+      "passes": false,
+      "dependsOn": [
+        "US-004",
+        "US-006"
+      ]
+    }
+  ],
+  "metadata": {
+    "updatedAt": "2026-03-24T03:24:12.968Z"
+  }
+}

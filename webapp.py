@@ -11,10 +11,15 @@ from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
-from flask import Flask, abort, jsonify, render_template, request, send_from_directory
+from flask import Flask, current_app, jsonify, render_template, request, send_from_directory
 
 from bitebuilder import (
     build_candidate_shortlist,
+    BiteBuilderError,
+    build_validation_error,
+    parse_premiere_xml_safe,
+    validate_brief,
+    format_error_for_log,
     normalize_segment_index,
     normalize_segment_indexes,
     run_pipeline,
@@ -31,8 +36,8 @@ from llm.ollama_client import (
     resolve_host,
 )
 from llm.prompts import CHAT_SYSTEM_PROMPT, build_chat_prompt
-from parser.premiere_xml import parse_premiere_xml_string
 from parser.transcript import format_for_llm, parse_transcript
+from parser.transcript import TranscriptValidationError
 
 
 ROOT = Path(__file__).resolve().parent
@@ -79,6 +84,72 @@ APP_STEPS = (
 
 def now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+def validation_error_payload(
+    code: str,
+    error_type: str,
+    message: str,
+    expected_input_format: str,
+    next_action: str,
+    *,
+    recoverable: bool = False,
+    stage: str | None = None,
+) -> dict:
+    return build_validation_error(
+        code=code,
+        error_type=error_type,
+        message=message,
+        expected_input_format=expected_input_format,
+        next_action=next_action,
+        recoverable=recoverable,
+        stage=stage,
+    )
+
+
+def transcript_timecode_error_payload(errors: list[dict], stage: str = "transcript") -> dict:
+    return build_validation_error(
+        code="TRANSCRIPT-TIMECODE-INVALID",
+        error_type="invalid_transcript_content",
+        message="Transcript timecodes are invalid or impossible.",
+        expected_input_format="Timecoded transcript blocks as HH:MM:SS:FF - HH:MM:SS:FF in chronological order.",
+        next_action=(
+            "Fix transcript formatting issues at the listed lines and retry "
+            "generation or chat."
+        ),
+        recoverable=True,
+        stage=stage,
+        details={"errors": errors},
+    )
+
+
+def validation_error_response(payload: dict, status: int = 400):
+    current_app.logger.error("api_error=%s", format_error_for_log(payload))
+    return jsonify({"status": "error", "error": payload}), status
+
+
+def _source_value(source, key: str, default):
+    if hasattr(source, key):
+        return getattr(source, key)
+    if hasattr(source, "to_dict"):
+        try:
+            source_dict = source.to_dict()
+            if isinstance(source_dict, dict) and key in source_dict:
+                return source_dict[key]
+        except Exception:
+            pass
+    if isinstance(source, dict):
+        return source.get(key, default)
+    return default
+
+
+def recoverable_generation_response(payload: dict, result: dict | None = None):
+    response = {
+        "status": payload.get("partial", {}).get("status") if isinstance(payload, dict) else "partial",
+        "error": payload,
+        "result": result,
+    }
+    return jsonify(response), 200
 
 
 def preferred_model(models: list[str]) -> str:
@@ -497,7 +568,15 @@ def create_app() -> Flask:
             transcript_path = resolve_repo_path(manifest["transcript_path"])
             xml_path = resolve_repo_path(manifest["xml_path"])
         except Exception as exc:
-            return jsonify({"error": str(exc)}), 404
+            return validation_error_response(build_validation_error(
+                code="PRESET-UNAVAILABLE",
+                error_type="missing_inputs",
+                message="Preset could not be loaded.",
+                expected_input_format="Preset id that exists and resolves to readable manifest files.",
+                next_action="Choose a valid preset id and retry.",
+                stage="preset",
+                details={"cause": str(exc)},
+            ), 404)
 
         return jsonify({
             "id": manifest["id"],
@@ -519,7 +598,14 @@ def create_app() -> Flask:
     def repo_file(repo_path: str):
         file_path = resolve_repo_path(repo_path)
         if ROOT not in file_path.parents or not file_path.is_file():
-            abort(404)
+            return validation_error_response(validation_error_payload(
+                code="REPO-FILE-MISSING",
+                error_type="missing_file",
+                message="Requested repo file was not found.",
+                expected_input_format="A repo_path that maps to a file under project root.",
+                next_action="Use a valid file path from the repository list.",
+                stage="file",
+            ), 404)
         return send_from_directory(file_path.parent, file_path.name, as_attachment=False)
 
     @app.post("/api/chat")
@@ -527,11 +613,28 @@ def create_app() -> Flask:
         data = request.get_json(silent=True) or {}
         transcript_text = (data.get("transcript_text") or "").strip()
         if not transcript_text:
-            return jsonify({"error": "Transcript text is required for chat."}), 400
+            return validation_error_response(validation_error_payload(
+                code="CHAT-TRANSCRIPT-MISSING",
+                error_type="missing_transcript_content",
+                message="Transcript text is required for chat.",
+                expected_input_format="Request JSON must include transcript_text.",
+                next_action="Upload transcript text before sending chat request.",
+                stage="transcript",
+            ))
 
-        segments = parse_transcript(transcript_text)
+        try:
+            segments = parse_transcript(transcript_text, strict=True)
+        except TranscriptValidationError as exc:
+            return validation_error_response(transcript_timecode_error_payload(exc.errors, "transcript"), 400)
         if not segments:
-            return jsonify({"error": "No transcript segments were found in the transcript."}), 400
+            return validation_error_response(validation_error_payload(
+                code="CHAT-TRANSCRIPT-NO-SEGMENTS",
+                error_type="unsupported_file_content",
+                message="No transcript segments were found in the transcript.",
+                expected_input_format="At least one HH:MM:SS:FF - HH:MM:SS:FF segment with text.",
+                next_action="Use a transcript export with timecoded segments.",
+                stage="transcript",
+            ))
 
         model = (data.get("model") or DEFAULT_MODEL).strip()
         brief = (data.get("brief") or "").strip()
@@ -542,7 +645,15 @@ def create_app() -> Flask:
         try:
             active_host, _ = resolve_host(model=model, preferred_host=DEFAULT_HOST)
         except Exception as exc:
-            return jsonify({"error": str(exc)}), 400
+            return validation_error_response(build_validation_error(
+                code="CHAT-HOST-UNAVAILABLE",
+                error_type="runtime_dependency",
+                message="Could not connect to Ollama host.",
+                expected_input_format="Reachable Ollama host/port with model access.",
+                next_action="Start Ollama and check host port in /api/models.",
+                stage="model",
+                details={"cause": str(exc)},
+            ))
 
         formatted_transcript = trim_transcript_for_chat(format_for_llm(segments))
         prompt = build_chat_prompt(
@@ -562,7 +673,15 @@ def create_app() -> Flask:
                 thinking_mode=thinking_mode,
             )
         except Exception as exc:
-            return jsonify({"error": str(exc)}), 400
+            return validation_error_response(build_validation_error(
+                code="CHAT-LLM-FAILED",
+                error_type="runtime_llm_error",
+                message="Failed to generate chat guidance.",
+                expected_input_format="Valid chat prompt and active model.",
+                next_action="Verify model availability and retry.",
+                stage="llm_generation",
+                details={"cause": str(exc)},
+            ))
 
         suggested_plan = build_copilot_plan(reply, segments, messages=messages)
 
@@ -579,18 +698,43 @@ def create_app() -> Flask:
         transcript_text = (data.get("transcript_text") or "").strip()
         xml_text = (data.get("xml_text") or "").strip()
         if not transcript_text:
-            return jsonify({"error": "Transcript text is required."}), 400
+            return validation_error_response(validation_error_payload(
+                code="PARSE-TRANSCRIPT-MISSING",
+                error_type="missing_transcript_content",
+                message="Transcript text is required.",
+                expected_input_format="Request JSON with transcript_text key.",
+                next_action="Provide transcript text.",
+                stage="transcript",
+            ))
 
-        segments = parse_transcript(transcript_text)
         timebase = 30
         ntsc = False
         if xml_text:
             try:
-                source = parse_premiere_xml_string(xml_text)
-                timebase = source.timebase
-                ntsc = source.ntsc
-            except Exception:
-                pass
+                source = parse_premiere_xml_safe(xml_text)
+                timebase = _source_value(source, "timebase", timebase)
+                ntsc = _source_value(source, "ntsc", ntsc)
+            except Exception as exc:
+                if isinstance(exc, BiteBuilderError):
+                    return validation_error_response(exc.error, 400)
+                return validation_error_response(validation_error_payload(
+                    code="PARSE-XML-INVALID",
+                    error_type="invalid_xml",
+                    message="Could not parse Premiere XML.",
+                    expected_input_format="Raw Premiere XML export text.",
+                    next_action="Upload a full XML export from Premiere.",
+                    stage="premiere_xml",
+                    details={"cause": str(exc)},
+                ))
+        try:
+            segments = parse_transcript(
+                transcript_text,
+                strict=True,
+                timebase=timebase,
+                ntsc=ntsc,
+            )
+        except TranscriptValidationError as exc:
+            return validation_error_response(transcript_timecode_error_payload(exc.errors, "transcript"), 400)
         return jsonify({
             "segment_count": len(segments),
             "segments": [
@@ -622,14 +766,56 @@ def create_app() -> Flask:
         accepted_plan = data.get("accepted_plan") or {}
         speaker_balance = (data.get("speaker_balance") or "balanced").strip()
         if not transcript_text or not xml_text:
-            return jsonify({"error": "Transcript text and Premiere XML text are required."}), 400
-
-        segments = parse_transcript(transcript_text)
-        source = parse_premiere_xml_string(xml_text)
+            return validation_error_response(validation_error_payload(
+                code="PREVIEW-INPUT-MISSING",
+                error_type="missing_inputs",
+                message="Transcript text and Premiere XML text are required.",
+                expected_input_format="Both transcript_text and xml_text.",
+                next_action="Fill both required fields before previewing candidates.",
+                stage="input",
+            ))
+        try:
+            validated_brief = validate_brief(brief)
+        except BiteBuilderError as exc:
+            return validation_error_response(exc.error)
+        try:
+            source = parse_premiere_xml_safe(xml_text)
+        except Exception as exc:
+            if isinstance(exc, BiteBuilderError):
+                return validation_error_response(exc.error, 400)
+            return validation_error_response(validation_error_payload(
+                code="PREVIEW-XML-INVALID",
+                error_type="invalid_xml",
+                message="Could not parse Premiere XML.",
+                expected_input_format="Valid Premiere XML export text.",
+                next_action="Upload a fresh Premiere XML export.",
+                stage="premiere_xml",
+                details={"cause": str(exc)},
+            ))
+        try:
+            timebase = _source_value(source, "timebase", 30)
+            ntsc = _source_value(source, "ntsc", False)
+            segments = parse_transcript(
+                transcript_text,
+                strict=True,
+                timebase=timebase,
+                ntsc=ntsc,
+            )
+        except TranscriptValidationError as exc:
+            return validation_error_response(transcript_timecode_error_payload(exc.errors, "transcript"), 400)
+        if not segments:
+            return validation_error_response(validation_error_payload(
+                code="PREVIEW-TRANSCRIPT-NO-SEGMENTS",
+                error_type="unsupported_file_content",
+                message="No transcript segments were found.",
+                expected_input_format="At least one timecoded block with text.",
+                next_action="Use a transcript export with timecoded blocks.",
+                stage="transcript",
+            ))
         shortlist = build_candidate_shortlist(
             segments=segments,
             source=source,
-            brief=brief,
+            brief=validated_brief,
             project_context=project_context,
             editorial_messages=messages,
             accepted_plan=accepted_plan,
@@ -650,11 +836,34 @@ def create_app() -> Flask:
         option_name = (data.get("name") or "Manual Edit").strip()
         cuts = data.get("cuts") or []
         if not xml_text or not cuts:
-            return jsonify({"error": "Premiere XML and at least one cut are required."}), 400
+            return validation_error_response(validation_error_payload(
+                code="MANUAL-INPUT-MISSING",
+                error_type="missing_inputs",
+                message="Premiere XML and at least one cut are required.",
+                expected_input_format="xml_text + cuts array.",
+                next_action="Provide both values and retry.",
+                stage="input",
+            ))
 
-        segments = parse_transcript(transcript_text) if transcript_text else []
+        try:
+            segments = parse_transcript(transcript_text, strict=True) if transcript_text else []
+        except TranscriptValidationError as exc:
+            return validation_error_response(transcript_timecode_error_payload(exc.errors, "transcript"), 400)
         segment_lookup = build_segment_lookup(segments)
-        source = parse_premiere_xml_string(xml_text)
+        try:
+            source = parse_premiere_xml_safe(xml_text)
+        except Exception as exc:
+            if isinstance(exc, BiteBuilderError):
+                return validation_error_response(exc.error, 400)
+            return validation_error_response(build_validation_error(
+                code="MANUAL-XML-INVALID",
+                error_type="invalid_xml",
+                message="Could not parse Premiere XML for manual render.",
+                expected_input_format="Valid raw Premiere XML export.",
+                next_action="Upload valid XML and retry.",
+                stage="premiere_xml",
+                details={"cause": str(exc)},
+            ))
 
         normalized_cuts = []
         for item in cuts:
@@ -668,7 +877,14 @@ def create_app() -> Flask:
             normalized_cuts.append({"tc_in": segment.tc_in, "tc_out": segment.tc_out})
 
         if not normalized_cuts:
-            return jsonify({"error": "No valid cuts were provided."}), 400
+            return validation_error_response(validation_error_payload(
+                code="MANUAL-NO-VALID-CUTS",
+                error_type="invalid_cuts",
+                message="No valid cuts were provided.",
+                expected_input_format="At least one cut as tc_in/tc_out or valid segment_index.",
+                next_action="Send corrected cut entries referencing parsed transcript segments.",
+                stage="cuts",
+            ))
 
         run_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid4().hex[:8]
         run_dir = app.config["OUTPUT_ROOT"] / run_id
@@ -713,11 +929,26 @@ def create_app() -> Flask:
         elif saved_dir:
             target = Path(saved_dir)
         if not target:
-            return jsonify({"error": "run_id or saved_dir is required."}), 400
+            return validation_error_response(validation_error_payload(
+                code="OPEN-OUTPUT-MISSING",
+                error_type="missing_inputs",
+                message="run_id or saved_dir is required.",
+                expected_input_format="Either run_id (queued response) or saved_dir path.",
+                next_action="Pass run_id or absolute saved_dir from generation responses.",
+                stage="output",
+            ))
         try:
             message = open_output_path(target.resolve())
         except Exception as exc:
-            return jsonify({"error": str(exc)}), 400
+            return validation_error_response(build_validation_error(
+                code="OPEN-OUTPUT-FAILED",
+                error_type="runtime_output_error",
+                message="Could not open output folder.",
+                expected_input_format="Writable output directory path.",
+                next_action="Confirm folder exists and OS permissions allow opening.",
+                stage="output",
+                details={"cause": str(exc)},
+            ))
         return jsonify({"message": message})
 
     @app.get("/api/session-log/<run_id>")
@@ -757,11 +988,27 @@ def create_app() -> Flask:
         speaker_balance = (data.get("speaker_balance") or "balanced").strip()
 
         if not transcript_text:
-            return jsonify({"error": "Transcript text is required."}), 400
+            return validation_error_response(validation_error_payload(
+                code="GENERATE-TRANSCRIPT-MISSING",
+                error_type="missing_transcript_content",
+                message="Transcript text is required.",
+                expected_input_format="Transcript key in request JSON.",
+                next_action="Provide transcript content before generation.",
+                stage="transcript",
+            ))
         if not xml_text:
-            return jsonify({"error": "Premiere XML text is required."}), 400
-        if not brief:
-            return jsonify({"error": "A creative brief is required."}), 400
+            return validation_error_response(validation_error_payload(
+                code="GENERATE-XML-MISSING",
+                error_type="invalid_xml",
+                message="Premiere XML text is required.",
+                expected_input_format="xml_text key in request JSON.",
+                next_action="Provide Premiere XML content before generation.",
+                stage="premiere_xml",
+            ))
+        try:
+            validated_brief = validate_brief(brief)
+        except BiteBuilderError as exc:
+            return validation_error_response(exc.error)
 
         run_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid4().hex[:8]
         run_dir = app.config["OUTPUT_ROOT"] / run_id
@@ -771,7 +1018,7 @@ def create_app() -> Flask:
             result = run_pipeline(
                 transcript_text=transcript_text,
                 xml_text=xml_text,
-                brief=brief,
+                brief=validated_brief,
                 options=options,
                 model=model,
                 output_dir=str(run_dir),
@@ -789,7 +1036,20 @@ def create_app() -> Flask:
                 thinking_mode=thinking_mode,
             )
         except Exception as exc:
-            return jsonify({"error": str(exc)}), 400
+            if isinstance(exc, BiteBuilderError) and exc.error.get("partial"):
+                return recoverable_generation_response(exc.error)
+            if isinstance(exc, BiteBuilderError):
+                app.logger.error("generation_failed=%s", format_error_for_log(exc.error))
+                return validation_error_response(exc.error)
+            return validation_error_response(validation_error_payload(
+                code="GENERATE-FAILED",
+                error_type="runtime_failure",
+                message="Generation failed.",
+                expected_input_format="Valid transcript, XML, brief, and model connection.",
+                next_action="Retry after fixing input errors shown above.",
+                stage="generation",
+                details={"cause": str(exc)},
+            ))
 
         apply_variant_name(result, run_dir, variant_name)
         return jsonify(serialize_generation_result(run_id, run_dir, result))
@@ -816,7 +1076,18 @@ def create_app() -> Flask:
         speaker_balance = (data.get("speaker_balance") or "balanced").strip()
 
         if not transcript_text or not xml_text or not brief:
-            return jsonify({"error": "Transcript text, Premiere XML, and a brief are required."}), 400
+            return validation_error_response(validation_error_payload(
+                code="GENERATE-JOB-INPUT-MISSING",
+                error_type="missing_inputs",
+                message="Transcript text, Premiere XML, and a brief are required.",
+                expected_input_format="transcript_text, xml_text, brief in JSON request.",
+                next_action="Supply all required values before starting job.",
+                stage="input",
+            ))
+        try:
+            validated_brief = validate_brief(brief)
+        except BiteBuilderError as exc:
+            return validation_error_response(exc.error)
 
         job_id = uuid4().hex
         run_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid4().hex[:8]
@@ -848,7 +1119,7 @@ def create_app() -> Flask:
                 result = run_pipeline(
                     transcript_text=transcript_text,
                     xml_text=xml_text,
-                    brief=brief,
+                    brief=validated_brief,
                     options=options,
                     model=model,
                     output_dir=str(run_dir),
@@ -871,9 +1142,24 @@ def create_app() -> Flask:
                 update_job("Generation complete.", status="completed", payload=payload)
             except Exception as exc:
                 with JOB_LOCK:
+                    if isinstance(exc, BiteBuilderError) and exc.error.get("partial"):
+                        JOB_STORE[job_id]["status"] = "partial"
+                        JOB_STORE[job_id]["error"] = exc.error
+                        JOB_STORE[job_id]["logs"].append({
+                            "timestamp": now_iso(),
+                            "message": exc.error.get("message"),
+                        })
+                        return
+                with JOB_LOCK:
                     JOB_STORE[job_id]["status"] = "error"
-                    JOB_STORE[job_id]["error"] = str(exc)
-                    JOB_STORE[job_id]["logs"].append({"timestamp": now_iso(), "message": str(exc)})
+                    if isinstance(exc, BiteBuilderError):
+                        error = exc.error
+                        app.logger.error("job_error=%s", format_error_for_log(error))
+                        JOB_STORE[job_id]["error"] = error
+                        JOB_STORE[job_id]["logs"].append({"timestamp": now_iso(), "message": error.get("message", str(exc))})
+                    else:
+                        JOB_STORE[job_id]["error"] = str(exc)
+                        JOB_STORE[job_id]["logs"].append({"timestamp": now_iso(), "message": str(exc)})
 
         threading.Thread(target=worker, daemon=True).start()
         return jsonify({"job_id": job_id, "run_id": run_id, "status": "queued"})
@@ -883,7 +1169,14 @@ def create_app() -> Flask:
         with JOB_LOCK:
             job = JOB_STORE.get(job_id)
         if not job:
-            return jsonify({"error": "Job not found."}), 404
+            return validation_error_response(validation_error_payload(
+                code="JOB-NOT-FOUND",
+                error_type="missing_resource",
+                message="Job not found.",
+                expected_input_format="A valid job_id returned by /api/generate-jobs.",
+                next_action="Request status for an existing job_id.",
+                stage="job_status",
+            ), 404)
         payload = {
             "job_id": job["job_id"],
             "run_id": job["run_id"],

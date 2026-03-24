@@ -1,0 +1,99 @@
+{
+  "version": 1,
+  "sessionId": "7e374463-4f46-4227-8b97-6a21676aa58e",
+  "status": "running",
+  "startedAt": "2026-03-24T03:18:08.886Z",
+  "updatedAt": "2026-03-24T03:21:43.793Z",
+  "currentIteration": 3,
+  "maxIterations": 20,
+  "tasksCompleted": 1,
+  "isPaused": false,
+  "agentPlugin": "codex",
+  "trackerState": {
+    "plugin": "json",
+    "prdPath": "./tasks/prd.json",
+    "totalTasks": 7,
+    "tasks": [
+      {
+        "id": "US-001",
+        "title": "Surface and classify CLI and web errors",
+        "status": "completed",
+        "completedInSession": true
+      },
+      {
+        "id": "US-002",
+        "title": "Validate transcript timecodes before LLM calls",
+        "status": "open",
+        "completedInSession": false
+      },
+      {
+        "id": "US-003",
+        "title": "Improve prompt quality and schema constraints",
+        "status": "open",
+        "completedInSession": false
+      },
+      {
+        "id": "US-004",
+        "title": "Add LLM response validation and one-shot recovery",
+        "status": "open",
+        "completedInSession": false
+      },
+      {
+        "id": "US-005",
+        "title": "Improve web UI workflow status and recoverability",
+        "status": "open",
+        "completedInSession": false
+      },
+      {
+        "id": "US-006",
+        "title": "Add fixture-backed deterministic CLI and web integration tests",
+        "status": "open",
+        "completedInSession": false
+      },
+      {
+        "id": "US-007",
+        "title": "Improve output determinism and metadata traceability",
+        "status": "open",
+        "completedInSession": false
+      }
+    ]
+  },
+  "iterations": [
+    {
+      "iteration": 1,
+      "status": "completed",
+      "taskId": "US-001",
+      "taskTitle": "Surface and classify CLI and web errors",
+      "taskCompleted": false,
+      "durationMs": 156255,
+      "startedAt": "2026-03-24T03:18:18.240Z",
+      "endedAt": "2026-03-24T03:20:54.495Z"
+    },
+    {
+      "iteration": 2,
+      "status": "completed",
+      "taskId": "US-001",
+      "taskTitle": "Surface and classify CLI and web errors",
+      "taskCompleted": false,
+      "durationMs": 26340,
+      "startedAt": "2026-03-24T03:20:55.522Z",
+      "endedAt": "2026-03-24T03:21:21.862Z"
+    },
+    {
+      "iteration": 3,
+      "status": "completed",
+      "taskId": "US-001",
+      "taskTitle": "Surface and classify CLI and web errors",
+      "taskCompleted": true,
+      "durationMs": 19939,
+      "startedAt": "2026-03-24T03:21:22.864Z",
+      "endedAt": "2026-03-24T03:21:42.803Z"
+    }
+  ],
+  "skippedTaskIds": [],
+  "cwd": "/home/dietrich001/bitebuilder",
+  "activeTaskIds": [
+    "US-002"
+  ],
+  "subagentPanelVisible": false
+}

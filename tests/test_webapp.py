@@ -1,5 +1,6 @@
 import unittest
 from unittest.mock import patch
+from bitebuilder import BiteBuilderError, build_validation_error
 
 from webapp import create_app
 
@@ -110,6 +111,41 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(payload["segments"][0]["segment_index"], 0)
         self.assertGreater(payload["segments"][0]["duration_seconds"], 0)
 
+    def test_generate_missing_brief_returns_structured_error(self):
+        response = self.client.post("/api/generate", json={
+            "transcript_text": (
+                "00:00:00:00 - 00:00:05:00\nSpeaker 1\n"
+                "Most shops think better nutrition sounds expensive.\n"
+            ),
+            "xml_text": (
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                "<xmeml version=\"4\"><sequence><media><video><track><clipitem>"
+                "<file><name>Sample Interview.mov</name><pathurl>file://localhost/C%3A/clip.mov</pathurl>"
+                "</file></clipitem></track></video></media></sequence></xmeml>"
+            ),
+            "brief": "",
+        })
+        self.assertEqual(response.status_code, 400)
+        payload = response.get_json()
+        self.assertEqual(payload["status"], "error")
+        self.assertEqual(payload["error"]["code"], "BRIEF-MISSING")
+        self.assertIn("expected_input_format", payload["error"])
+        self.assertIn("next_action", payload["error"])
+
+    def test_generate_invalid_xml_returns_structured_error(self):
+        response = self.client.post("/api/generate", json={
+            "transcript_text": (
+                "00:00:00:00 - 00:00:05:00\nSpeaker 1\n"
+                "Most shops think better nutrition sounds expensive.\n"
+            ),
+            "xml_text": "<not-xml>",
+            "brief": "45 second proof of concept",
+        })
+        self.assertEqual(response.status_code, 400)
+        payload = response.get_json()
+        self.assertEqual(payload["status"], "error")
+        self.assertEqual(payload["error"]["code"], "XML-MALFORMED")
+
     @patch("webapp.build_candidate_shortlist", return_value=[{
         "segment_index": 0,
         "tc_in": "00:00:00:00",
@@ -121,7 +157,7 @@ class WebAppTests(unittest.TestCase):
         "roles": ["HOOK"],
         "reasons": ["pinned"],
     }])
-    @patch("webapp.parse_premiere_xml_string", return_value=DummySource())
+    @patch("webapp.parse_premiere_xml_safe", return_value=DummySource())
     def test_preview_shortlist_endpoint(self, _parse_source, _build_candidate_shortlist):
         response = self.client.post("/api/preview-shortlist", json={
             "transcript_text": (
@@ -233,8 +269,40 @@ class WebAppTests(unittest.TestCase):
         payload = response.get_json()
         self.assertIn("job_id", payload)
 
+    @patch("webapp.run_pipeline")
+    def test_generate_returns_partial_when_recoverable(self, mock_run_pipeline):
+        mock_run_pipeline.side_effect = BiteBuilderError({
+            **build_validation_error(
+                code="SELECTION-FAILED",
+                error_type="runtime_selection_failed",
+                message="Selection failed after XML parse.",
+                expected_input_format="Transcript + XML + stable model output.",
+                next_action="Retry generation after resolving model or temporary failure.",
+                stage="selection",
+                recoverable=True,
+            ),
+            "partial": {"status": "partial", "stage": "selection"},
+        })
+        response = self.client.post("/api/generate", json={
+            "transcript_text": (
+                "00:00:00:00 - 00:00:05:00\nSpeaker 1\n"
+                "Most shops think better nutrition sounds expensive.\n"
+            ),
+            "xml_text": (
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                "<xmeml version=\"4\"><sequence><media><video><track><clipitem>"
+                "<file><name>Sample Interview.mov</name><pathurl>file://localhost/C%3A/clip.mov</pathurl>"
+                "</file></clipitem></track></video></media></sequence></xmeml>"
+            ),
+            "brief": "45 second proof of concept",
+        })
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["status"], "partial")
+        self.assertEqual(payload["error"]["code"], "SELECTION-FAILED")
+
     @patch("webapp.generate_sequence", return_value="<xmeml version='4'></xmeml>")
-    @patch("webapp.parse_premiere_xml_string", return_value=DummySource())
+    @patch("webapp.parse_premiere_xml_safe", return_value=DummySource())
     def test_render_xml_endpoint(self, _parse_source, _generate_sequence):
         response = self.client.post("/api/render-xml", json={
             "transcript_text": (

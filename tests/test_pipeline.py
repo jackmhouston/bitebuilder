@@ -9,10 +9,19 @@ from unittest.mock import patch
 
 import bitebuilder
 from generator.timecode import estimate_duration_seconds
+from generator.timecode import frames_to_tc, tc_to_frames
 from generator.xmeml import generate_sequence
 from llm.prompts import build_editorial_direction_prompt, build_user_prompt, validate_llm_response
 from parser.premiere_xml import parse_premiere_xml
-from parser.transcript import format_for_llm, get_valid_timecodes, parse_transcript_file
+from parser.transcript import (
+    format_for_llm,
+    get_valid_timecodes,
+    parse_transcript,
+    parse_transcript_file,
+    TranscriptValidationError,
+)
+from bitebuilder import BiteBuilderError
+from bitebuilder import run_pipeline
 
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -174,6 +183,70 @@ class BiteBuilderPipelineTests(unittest.TestCase):
         )
         self.assertGreater(total_duration, 0)
 
+    def test_timecode_roundtrip_preserved_for_fixture_segments(self):
+        segments = parse_transcript_file(str(TRANSCRIPT_FIXTURE))
+        source = parse_premiere_xml(str(XML_FIXTURE))
+        for seg in segments:
+            tc_in_frames = tc_to_frames(seg.tc_in, source.timebase)
+            tc_out_frames = tc_to_frames(seg.tc_out, source.timebase)
+            self.assertEqual(frames_to_tc(tc_in_frames, source.timebase), seg.tc_in)
+            self.assertEqual(frames_to_tc(tc_out_frames, source.timebase), seg.tc_out)
+            estimated_seconds = estimate_duration_seconds(
+                seg.tc_in, seg.tc_out, source.timebase, source.ntsc,
+            )
+            expected_seconds = (tc_out_frames - tc_in_frames) / source.actual_fps
+            self.assertAlmostEqual(estimated_seconds, expected_seconds, places=6)
+
+    def test_parse_transcript_rejects_reversed_or_zero_length_segments(self):
+        transcript = (
+            "00:00:05:00 - 00:00:05:00\nSpeaker 1\n"
+            "Zero-length cut.\n\n"
+            "00:00:10:00 - 00:00:08:00\nSpeaker 1\n"
+            "Reversed range.\n"
+        )
+        with self.assertRaises(TranscriptValidationError) as exc:
+            parse_transcript(transcript, strict=True)
+        self.assertTrue(
+            any("time_range" == error["field"] for error in exc.exception.errors)
+        )
+
+    def test_parse_transcript_rejects_overlap(self):
+        transcript = (
+            "00:00:00:00 - 00:00:06:00\nSpeaker 1\n"
+            "First clip.\n\n"
+            "00:00:05:00 - 00:00:10:00\nSpeaker 1\n"
+            "Overlaps prior clip.\n"
+        )
+        with self.assertRaises(TranscriptValidationError) as exc:
+            parse_transcript(transcript, strict=True)
+        self.assertTrue(any("time_transition" in item["field"] for item in exc.exception.errors))
+
+    def test_parse_transcript_rejects_malformed_format_with_line_context(self):
+        transcript = (
+            "00:00:00:00 - 00:00:05:0\nSpeaker 1\n"
+            "One-digit frame should fail strict parsing.\n"
+        )
+        with self.assertRaises(TranscriptValidationError) as exc:
+            parse_transcript(transcript, strict=True)
+        self.assertEqual(exc.exception.errors[0]["line"], 1)
+        self.assertIn("line 1", exc.exception.errors[0]["context"])
+
+    def test_invalid_transcript_errors_before_output(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            invalid_transcript = (
+                "00:00:10:00 - 00:00:05:00\nSpeaker 1\n"
+                "Invalid range.\n"
+            )
+            with self.assertRaises(bitebuilder.BiteBuilderError) as exc:
+                run_pipeline(
+                    transcript_text=invalid_transcript,
+                    xml_text=XML_FIXTURE.read_text(encoding="utf-8"),
+                    brief="45 second proof of concept",
+                    output_dir=temp_dir,
+                )
+            self.assertEqual(exc.exception.error["code"], "TRANSCRIPT-TIMECODE-INVALID")
+            self.assertEqual(list(Path(temp_dir).iterdir()), [])
+
     def test_cli_main_writes_output_files(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             output_dir = Path(temp_dir) / "output"
@@ -206,6 +279,26 @@ class BiteBuilderPipelineTests(unittest.TestCase):
 
             debug_response = json.loads((output_dir / "_llm_response.json").read_text())
             self.assertEqual(len(debug_response["options"]), 2)
+
+    def test_run_pipeline_missing_transcript_file(self):
+        with self.assertRaises(BiteBuilderError) as exc:
+            run_pipeline(
+                transcript_text="",
+                xml_text="<xmeml version='4'></xmeml>",
+                brief="45 second proof of concept",
+            )
+        self.assertEqual(exc.exception.error["code"], "TRANSCRIPT-TIMECODE-INVALID")
+
+    def test_run_pipeline_malformed_brief_is_structured(self):
+        with self.assertRaises(BiteBuilderError) as exc:
+            run_pipeline(
+                transcript_text=Path(TRANSCRIPT_FIXTURE).read_text(encoding="utf-8"),
+                xml_text="<xmeml version='4'></xmeml>",
+                brief="ok",
+            )
+        self.assertEqual(exc.exception.error["code"], "BRIEF-MALFORMED")
+        self.assertIn("expected_input_format", exc.exception.error)
+        self.assertIn("next_action", exc.exception.error)
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ Usage:
 """
 
 import argparse
+import logging
 import json
 import os
 import re
@@ -21,6 +22,7 @@ import sys
 import xml.etree.ElementTree as ET
 
 from parser.transcript import parse_transcript, get_valid_timecodes
+from parser.transcript import TranscriptValidationError
 from parser.premiere_xml import parse_premiere_xml_string
 from generator.xmeml import generate_sequence
 from generator.timecode import estimate_duration_seconds
@@ -42,6 +44,182 @@ from llm.ollama_client import (
     generate_text,
     normalize_thinking_mode,
 )
+
+
+def build_validation_error(
+    code: str,
+    error_type: str,
+    message: str,
+    expected_input_format: str,
+    next_action: str,
+    *,
+    recoverable: bool = False,
+    stage: str | None = None,
+    details: dict | None = None,
+) -> dict:
+    """Build a structured, user-facing error payload."""
+    return {
+        "code": code,
+        "type": error_type,
+        "message": message,
+        "expected_input_format": expected_input_format,
+        "next_action": next_action,
+        "recoverable": recoverable,
+        "stage": stage or "validation",
+        "details": details or {},
+    }
+
+
+def build_transcript_timecode_error(errors: list[dict]) -> BiteBuilderError:
+    """Build a deterministic transcript parsing error payload."""
+    return BiteBuilderError(build_validation_error(
+        code="TRANSCRIPT-TIMECODE-INVALID",
+        error_type="invalid_transcript_content",
+        message="Transcript timecodes are invalid or impossible.",
+        expected_input_format="Timecoded transcript blocks as HH:MM:SS:FF - HH:MM:SS:FF in chronological order.",
+        next_action=(
+            "Fix each line-level transcript issue and retry. "
+            "Use only valid frame numbers and ensure each segment has non-empty text."
+        ),
+        stage="transcript",
+        recoverable=True,
+        details={"errors": errors},
+    ))
+
+
+class BiteBuilderError(Exception):
+    """Error with structured context that can be surfaced consistently in CLI and web."""
+
+    def __init__(self, payload: dict) -> None:
+        super().__init__(payload.get("message"))
+        self.error = payload
+
+
+def format_error_for_log(error: dict) -> str:
+    """Return stable machine-readable log payload."""
+    return json.dumps(error, sort_keys=True, separators=(",", ":"))
+
+
+def validate_brief(brief: str) -> str:
+    """Validate and normalize the creative brief."""
+    normalized = (brief or "").strip()
+    if not normalized:
+        raise BiteBuilderError(build_validation_error(
+            code="BRIEF-MISSING",
+            error_type="missing_brief",
+            message="Creative brief is required.",
+            expected_input_format="A concise plain-text brief (at least 3 words).",
+            next_action="Add a brief that describes duration goals and narrative style.",
+            stage="brief",
+        ))
+    if len(normalized) < 8 or len(re.findall(r"[A-Za-z]", normalized)) < 3:
+        raise BiteBuilderError(build_validation_error(
+            code="BRIEF-MALFORMED",
+            error_type="malformed_brief",
+            message="Creative brief is too short or missing readable content.",
+            expected_input_format="Natural language brief, for example: "
+            "'45 second proof of concept, open with objection, end with a call to action'.",
+            next_action="Rewrite the brief with at least a short sentence describing desired output.",
+            stage="brief",
+        ))
+    return normalized
+
+
+def parse_transcript_file_bytes(raw_text: str) -> str:
+    """Return raw text or raise a stable structured error."""
+    if not raw_text.strip():
+        raise BiteBuilderError(build_validation_error(
+            code="TRANSCRIPT-EMPTY",
+            error_type="unsupported_file_content",
+            message="Transcript content is empty.",
+            expected_input_format="Timecoded transcript blocks with speaker and dialogue text.",
+            next_action="Provide transcript text including HH:MM:SS:FF ranges and spoken lines.",
+            stage="transcript",
+        ))
+    return raw_text
+
+
+def read_text_file(path: str) -> str:
+    """Read and validate a transcript or XML text file."""
+    if not path:
+        raise BiteBuilderError(build_validation_error(
+            code="INPUT-MISSING",
+            error_type="missing_input",
+            message="Missing required input path.",
+            expected_input_format="A valid path to a text file.",
+            next_action="Pass a valid --transcript / --xml path.",
+            stage="input",
+        ))
+    if not os.path.exists(path):
+        raise BiteBuilderError(build_validation_error(
+            code="INPUT-NOT-FOUND",
+            error_type="missing_transcript_file",
+            message=f"Input file not found: {path}",
+            expected_input_format="Path to an existing UTF-8 file.",
+            next_action="Verify the path is correct and re-run.",
+            stage="input",
+        ))
+    if not os.path.isfile(path):
+        raise BiteBuilderError(build_validation_error(
+            code="INPUT-NOT-FILE",
+            error_type="invalid_transcript_file",
+            message=f"Input path is not a file: {path}",
+            expected_input_format="A filesystem path to a UTF-8 text or XML file.",
+            next_action="Point to a file, not a folder.",
+            stage="input",
+        ))
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return parse_transcript_file_bytes(handle.read())
+    except UnicodeDecodeError as exc:
+        raise BiteBuilderError(build_validation_error(
+            code="INPUT-ENCODING",
+            error_type="unsupported_file_content",
+            message=f"Could not decode file as UTF-8: {path}",
+            expected_input_format="UTF-8 encoded text file.",
+            next_action="Save or export as UTF-8 and retry.",
+            stage="input",
+            recoverable=True,
+            details={"cause": str(exc)},
+        ))
+    except OSError as exc:
+        raise BiteBuilderError(build_validation_error(
+            code="INPUT-IOERROR",
+            error_type="missing_transcript_file",
+            message=f"Cannot open file: {path}",
+            expected_input_format="Readable text/XML path.",
+            next_action="Check file permissions and retry.",
+            stage="input",
+            details={"cause": str(exc)},
+        ))
+
+
+def parse_premiere_xml_safe(xml_text: str):
+    """Parse Premiere XML with stable user-facing error mapping."""
+    try:
+        return parse_premiere_xml_string(xml_text)
+    except Exception as exc:
+        if isinstance(exc, ET.ParseError):
+            raise BiteBuilderError(build_validation_error(
+                code="XML-MALFORMED",
+                error_type="invalid_xml",
+                message="Invalid Premiere XML content.",
+                expected_input_format="Raw Premiere XML export text that starts with <xmeml>.",
+                next_action="Export XML from Premiere again and ensure it is copied in full.",
+                stage="premiere_xml",
+                recoverable=True,
+                details={"cause": str(exc)},
+            ))
+        raise BiteBuilderError(build_validation_error(
+            code="XML-UNSUPPORTED",
+            error_type="unsupported_file_content",
+            message="XML structure is unsupported or missing required Premiere metadata.",
+            expected_input_format="Valid Premiere XML with <file><pathurl> plus sequence metadata.",
+            next_action="Export an XMEML v4 XML sequence directly from Premiere.",
+            stage="premiere_xml",
+            recoverable=True,
+            details={"cause": str(exc)},
+        ))
 
 
 DURATION_RANGE_PATTERN = re.compile(
@@ -1465,48 +1643,143 @@ def run_pipeline(
     progress_callback=None,
 ) -> dict:
     """Run the full BiteBuilder pipeline from raw transcript and XML strings."""
+    progress = {
+        "transcript_parsed": False,
+        "xml_parsed": False,
+        "selection_started": False,
+        "output_started": False,
+    }
+
+    validated_brief = validate_brief(brief)
     if progress_callback:
         progress_callback("Parsing transcript.")
-    segments = parse_transcript(transcript_text)
+    try:
+        segments = parse_transcript(
+            transcript_text,
+            strict=True,
+        )
+    except TranscriptValidationError as exc:
+        raise build_transcript_timecode_error(exc.errors)
+
     if not segments:
-        raise ValueError("No transcript segments found in the uploaded transcript.")
+        raise BiteBuilderError(build_validation_error(
+            code="TRANSCRIPT-NO-SEGMENTS",
+            error_type="unsupported_file_content",
+            message="No valid transcript segments were found.",
+            expected_input_format="Timecoded blocks following README format.",
+            next_action="Ensure the transcript includes valid timecode ranges and text.",
+            stage="transcript",
+            recoverable=True,
+        ))
+
+    progress["transcript_parsed"] = True
+    progress["segment_count"] = len(segments)
 
     if progress_callback:
         progress_callback("Parsing Premiere XML.")
-    source = parse_premiere_xml_string(xml_text)
+    source = parse_premiere_xml_safe(xml_text)
+    progress["xml_parsed"] = True
+    progress["source"] = source.to_dict()
+
+    # Additional validation pass with source frame rate to enforce frame-range policies.
+    try:
+        parse_transcript(
+            transcript_text,
+            strict=True,
+            timebase=source.timebase,
+            ntsc=source.ntsc,
+        )
+    except TranscriptValidationError as exc:
+        raise build_transcript_timecode_error(exc.errors)
+
     if progress_callback:
         progress_callback("Resolving local model.")
-    resolved_host, available_models = ensure_ollama_ready(model, host)
+    try:
+        resolved_host, available_models = ensure_ollama_ready(model, host)
+    except Exception as exc:
+        raise BiteBuilderError(build_validation_error(
+            code="MODEL-UNAVAILABLE",
+            error_type="runtime_dependency",
+            message="Failed to resolve Ollama model.",
+            expected_input_format="Available Ollama model and local host.",
+            next_action="Start Ollama and install the selected model.",
+            stage="model",
+            details={"cause": str(exc)},
+        ))
 
-    response, validation_errors, used_retry, valid_tcs, target_duration_range, debug_artifacts = generate_edit_options(
-        segments=segments,
-        source=source,
-        brief=brief,
-        num_options=options,
-        model=model,
-        host=resolved_host,
-        timeout=timeout,
-        project_context=project_context,
-        editorial_messages=editorial_messages,
-        pinned_segment_indexes=pinned_segment_indexes,
-        banned_segment_indexes=banned_segment_indexes,
-        required_segment_indexes=required_segment_indexes,
-        locked_segment_indexes=locked_segment_indexes,
-        forced_open_segment_index=forced_open_segment_index,
-        speaker_balance=speaker_balance,
-        accepted_plan=accepted_plan,
-        thinking_mode=thinking_mode,
-        progress_callback=progress_callback,
-    )
+    try:
+        progress["selection_started"] = True
+        response, validation_errors, used_retry, valid_tcs, target_duration_range, debug_artifacts = generate_edit_options(
+            segments=segments,
+            source=source,
+            brief=validated_brief,
+            num_options=options,
+            model=model,
+            host=resolved_host,
+            timeout=timeout,
+            project_context=project_context,
+            editorial_messages=editorial_messages,
+            pinned_segment_indexes=pinned_segment_indexes,
+            banned_segment_indexes=banned_segment_indexes,
+            required_segment_indexes=required_segment_indexes,
+            locked_segment_indexes=locked_segment_indexes,
+            forced_open_segment_index=forced_open_segment_index,
+            speaker_balance=speaker_balance,
+            accepted_plan=accepted_plan,
+            thinking_mode=thinking_mode,
+            progress_callback=progress_callback,
+        )
+    except Exception as exc:
+        error = build_validation_error(
+            code="SELECTION-FAILED",
+            error_type="runtime_selection_failed",
+            message="Selection failed after transcript and XML were loaded.",
+            expected_input_format="Valid transcript, valid Premiere XML, and a working Ollama response.",
+            next_action="Retry generation; if this repeats, verify the LLM host and captured logs.",
+            stage="selection",
+            recoverable=True,
+            details={"cause": str(exc)},
+        )
+        partial = {
+            "status": "partial",
+            "stage": "selection",
+            "progress": {**progress, "selection_started": False},
+            "segment_count": len(segments),
+            "source": source.to_dict(),
+            "brief": validated_brief,
+        }
+        raise BiteBuilderError({**error, "partial": partial})
 
     if progress_callback:
         progress_callback("Writing output files.")
-    output_files, debug_path, debug_files = write_output_files(
-        response,
-        source,
-        output_dir,
-        debug_artifacts=debug_artifacts,
-    )
+    try:
+        progress["output_started"] = True
+        output_files, debug_path, debug_files = write_output_files(
+            response,
+            source,
+            output_dir,
+            debug_artifacts=debug_artifacts,
+        )
+    except Exception as exc:
+        error = build_validation_error(
+            code="OUTPUT-WRITE-FAILED",
+            error_type="runtime_output_error",
+            message="Failed while writing generated XML files.",
+            expected_input_format="Writable output directory and a complete generated response.",
+            next_action="Check output permissions and retry with --output pointing to a writable folder.",
+            stage="output",
+            recoverable=True,
+            details={"cause": str(exc)},
+        )
+        partial = {
+            "status": "partial",
+            "stage": "output",
+            "progress": progress,
+            "segment_count": len(segments),
+            "source": source.to_dict(),
+            "brief": validated_brief,
+        }
+        raise BiteBuilderError({**error, "partial": partial})
 
     return {
         "segments": segments,
@@ -1524,16 +1797,19 @@ def run_pipeline(
         "debug_path": debug_path,
         "debug_files": debug_files,
         "debug_artifacts": debug_artifacts,
+        "progress": progress,
+        "brief": validated_brief,
         "output_dir": os.path.abspath(output_dir),
     }
 
 
-def read_text_file(path: str) -> str:
-    with open(path, "r", encoding="utf-8") as handle:
-        return handle.read()
-
-
 def main():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    logger = logging.getLogger("bitebuilder.cli")
+
     args = parse_args()
 
     print("=" * 60)
@@ -1554,8 +1830,22 @@ def main():
             timeout=args.timeout,
             thinking_mode=args.thinking_mode,
         )
+    except BiteBuilderError as exc:
+        logger.error("bitebuilder_error=%s", format_error_for_log(exc.error))
+        print(f"ERROR [{exc.error.get('code')}]: {exc.error.get('message')}", file=sys.stderr)
+        print(f"Expected format: {exc.error.get('expected_input_format')}", file=sys.stderr)
+        print(f"Fix this: {exc.error.get('next_action')}", file=sys.stderr)
+        if exc.error.get("partial"):
+            print(
+                f"Recoverable status: {exc.error['partial'].get('status')} "
+                f"at stage={exc.error['partial'].get('stage')}"
+            )
+        sys.exit(1)
     except Exception as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        logger.exception("Unexpected bitebuilder error.")
+        print("ERROR [RUNTIME-UNKNOWN]: Unexpected runtime failure.", file=sys.stderr)
+        print("Fix this: Re-run with valid inputs and check the error details.", file=sys.stderr)
+        print(f"Details: {exc}", file=sys.stderr)
         sys.exit(1)
 
     source = result["source"]
