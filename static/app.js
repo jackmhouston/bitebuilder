@@ -92,10 +92,7 @@ const pageStatusMessage = pageStatus ? pageStatus.querySelector("[data-page-mess
 const pageErrorContainer = pageStatus ? pageStatus.querySelector("[data-page-error]") : null;
 const pageSnapshotContainer = pageStatus ? pageStatus.querySelector("[data-page-snapshot]") : null;
 const stepLinks = Array.from(document.querySelectorAll("[data-step-link]"));
-const modelSelect = document.getElementById("modelSelect");
-const thinkingModeSelect = document.getElementById("thinkingModeSelect");
 const optionsInput = document.getElementById("optionsInput");
-const timeoutInput = document.getElementById("timeoutInput");
 const briefInput = document.getElementById("briefInput");
 const contextInput = document.getElementById("contextInput");
 const projectTitleInput = document.getElementById("projectTitleInput");
@@ -113,7 +110,6 @@ const startOverButton = document.getElementById("startOverButton");
 const continueFromIntakeButton = document.getElementById("continueFromIntakeButton");
 const continueFromBriefButton = document.getElementById("continueFromBriefButton");
 const continueFromChatButton = document.getElementById("continueFromChatButton");
-const checkModelsButton = document.getElementById("checkModelsButton");
 const chatLog = document.getElementById("chatLog");
 const chatInput = document.getElementById("chatInput");
 const chatButton = document.getElementById("chatButton");
@@ -123,7 +119,6 @@ const acceptedPlanPanel = document.getElementById("acceptedPlan");
 const acceptedPlanSummary = document.getElementById("acceptedPlanSummary");
 const generateButton = document.getElementById("generateButton");
 const results = document.getElementById("results");
-const modelStatus = document.querySelector("[data-model-status]");
 const transcriptBrowser = document.getElementById("transcriptBrowser");
 const transcriptSearchInput = document.getElementById("transcriptSearchInput");
 const manualLane = document.getElementById("manualLane");
@@ -186,7 +181,7 @@ function clearInlineError() {
   [briefInput, contextInput, projectNotesInput].forEach((element) => {
     element?.classList.remove("input-error");
   });
-  [transcriptFileInput, xmlFileInput, modelSelect, thinkingModeSelect, timeoutInput].forEach((element) => {
+  [transcriptFileInput, xmlFileInput].forEach((element) => {
     element?.classList.remove("input-error");
   });
 }
@@ -286,9 +281,6 @@ function updateFieldErrors(error) {
   }
   if (error.stage === "brief") {
     briefInput?.classList.add("input-error");
-  }
-  if (error.stage === "model") {
-    modelSelect?.classList.add("input-error");
   }
 }
 
@@ -1221,11 +1213,8 @@ function renderStateSnapshot() {
   syncInputValue(briefInput, state.brief);
   syncInputValue(contextInput, state.projectContext);
   syncInputValue(optionsInput, state.options);
-  syncInputValue(timeoutInput, state.timeout);
   syncInputValue(variantNameInput, state.variantName);
   syncInputValue(speakerBalanceSelect, state.speakerBalance);
-  syncInputValue(thinkingModeSelect, state.thinkingMode);
-  populateModelSelect();
 }
 
 function renderIntake() {
@@ -1696,54 +1685,6 @@ function renderAll() {
   void renderLogsPage();
 }
 
-function populateModelSelect() {
-  if (!modelSelect) {
-    return;
-  }
-
-  modelSelect.innerHTML = "";
-
-  if (!modelInventory.length) {
-    const option = document.createElement("option");
-    option.value = state.model || "";
-    option.textContent = state.model || "Check local models first";
-    option.selected = true;
-    modelSelect.appendChild(option);
-    modelSelect.disabled = true;
-
-    if (modelStatus) {
-      if (modelLookupState === "empty" || modelLookupState === "error") {
-        modelStatus.textContent = modelLookupMessage;
-      } else {
-        modelStatus.textContent = state.model ? `Saved model: ${state.model}` : "Models not checked.";
-      }
-    }
-    return;
-  }
-
-  modelInventory.forEach((model) => {
-    const option = document.createElement("option");
-    option.value = model;
-    option.textContent = model;
-    option.selected = model === state.model;
-    modelSelect.appendChild(option);
-  });
-
-  if (state.model && !modelInventory.includes(state.model)) {
-    const option = document.createElement("option");
-    option.value = state.model;
-    option.textContent = `${state.model} (saved)`;
-    option.selected = true;
-    modelSelect.appendChild(option);
-  }
-
-  modelSelect.disabled = false;
-
-  if (modelStatus) {
-    modelStatus.textContent = modelLookupMessage || `${modelInventory.length} model(s) found.`;
-  }
-}
-
 async function fetchModels() {
   try {
     const response = await fetch("/api/models");
@@ -1772,9 +1713,6 @@ async function fetchModels() {
   } catch (error) {
     modelLookupState = "error";
     modelLookupMessage = `Model lookup failed: ${error.message}`;
-    if (modelStatus) {
-      modelStatus.textContent = modelLookupMessage;
-    }
     setStatus(modelLookupMessage);
   }
 }
@@ -2246,11 +2184,6 @@ function bindPersistentFields() {
       commitState({ options: Number(event.target.value || 3) }, { clearGeneration: true, clearError: true });
     });
   }
-  if (timeoutInput) {
-    timeoutInput.addEventListener("input", (event) => {
-      commitState({ timeout: Number(event.target.value || 180) }, { clearGeneration: true, clearError: true });
-    });
-  }
   if (variantNameInput) {
     variantNameInput.addEventListener("input", (event) => {
       commitState({ variantName: event.target.value }, { clearGeneration: false });
@@ -2259,16 +2192,6 @@ function bindPersistentFields() {
   if (speakerBalanceSelect) {
     speakerBalanceSelect.addEventListener("change", (event) => {
       commitState({ speakerBalance: event.target.value }, { clearGeneration: true, clearError: true });
-    });
-  }
-  if (thinkingModeSelect) {
-    thinkingModeSelect.addEventListener("change", (event) => {
-      commitState({ thinkingMode: event.target.value }, { clearGeneration: true, clearError: true });
-    });
-  }
-  if (modelSelect) {
-    modelSelect.addEventListener("change", (event) => {
-      commitState({ model: event.target.value }, { clearGeneration: true, clearError: true });
     });
   }
 }
@@ -2364,10 +2287,6 @@ function bindEvents() {
 
   if (saveProjectButton) {
     saveProjectButton.addEventListener("click", exportProjectState);
-  }
-
-  if (checkModelsButton) {
-    checkModelsButton.addEventListener("click", fetchModels);
   }
 
   if (startFreshButton) {
