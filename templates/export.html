@@ -34,7 +34,9 @@
       </div>
 
       <div class="status-box" data-page-status>
-        No run yet.
+        <span data-page-message>No run yet.</span>
+        <div data-page-error></div>
+        <div data-page-snapshot></div>
       </div>
 
       <a class="button button-secondary" href="{{ url_for('project_logs') }}">Session log</a>

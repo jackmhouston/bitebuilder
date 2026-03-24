@@ -1368,7 +1368,7 @@ def generate_edit_options(
     speaker_balance: str = "balanced",
     accepted_plan: dict | None = None,
     thinking_mode: str = DEFAULT_THINKING_MODE,
-    max_attempts: int = 3,
+    max_attempts: int = 2,
     progress_callback=None,
 ):
     """Call the LLM and validate the returned edit options."""
@@ -1484,8 +1484,11 @@ def generate_edit_options(
 
     response = {}
     used_retry = False
+    selection_retry_errors: list[str] = []
+    parse_or_validation_error = False
     errors = []
     warnings = []
+    validation_errors = []
     prompt = user_prompt
 
     for attempt in range(max_attempts):
@@ -1506,6 +1509,10 @@ def generate_edit_options(
                 thinking_mode=thinking_mode,
                 debug=llm_debug,
             )
+            if not isinstance(raw_response, dict):
+                raise TypeError(
+                    f"Model output must be a JSON object, got {type(raw_response).__name__}."
+                )
             candidate_errors = collect_candidate_validation_errors(
                 response=raw_response,
                 valid_candidate_indexes=valid_candidate_indexes,
@@ -1544,6 +1551,7 @@ def generate_edit_options(
                 valid_timecodes=valid_tcs,
                 valid_candidate_timecodes=valid_candidate_timecodes,
                 expected_options=num_options,
+                transcript_segments=segments,
             )
             duration_warnings = collect_duration_warnings(
                 response=response,
@@ -1557,6 +1565,9 @@ def generate_edit_options(
             errors = [str(exc)]
             warnings = []
             response = {}
+            parse_or_validation_error = any(
+                "json" in (str(exc) or "").lower() or "parse" in (str(exc) or "").lower()
+            )
 
         attempt_logs.append({
             "attempt": attempt + 1,
@@ -1572,26 +1583,23 @@ def generate_edit_options(
         if not errors:
             break
 
+        parse_or_validation_error = (
+            parse_or_validation_error
+            or any("json" in item.lower() for item in errors)
+            or any("parse" in item.lower() for item in errors)
+        )
         if attempt < max_attempts - 1:
             used_retry = True
+            selection_retry_errors = errors[:]
             prompt = build_retry_prompt(user_prompt, errors)
 
     if errors:
         if progress_callback:
-            progress_callback("Model output failed validation. Building deterministic fallback.")
-        used_fallback = True
-        response = build_fallback_response(
-            candidates=candidate_shortlist,
-            source=source,
-            num_options=num_options,
-            target_duration_range=target_duration_range,
-            editorial_text=editorial_text,
-        )
-        warnings = warnings + errors + [
-            "Used deterministic fallback assembly because the model response was invalid or incomplete."
-        ]
+            progress_callback("Model output failed validation after bounded retry.")
+        used_fallback = False
+        validation_errors = errors
     else:
-        errors = warnings
+        validation_errors = []
 
     if progress_callback:
         progress_callback("Selection complete.")
@@ -1605,10 +1613,16 @@ def generate_edit_options(
         "candidate_shortlist": candidate_shortlist,
         "generation_prompt": user_prompt,
         "attempts": attempt_logs,
+        "selection_retry": {
+            "attempted": used_retry,
+            "errors": selection_retry_errors,
+            "parse_or_validation_error": parse_or_validation_error,
+        },
+        "selection_warnings": warnings,
         "used_fallback": used_fallback,
     }
 
-    return response, errors, used_retry, valid_tcs, target_duration_range, debug_artifacts
+    return response, validation_errors, used_retry, valid_tcs, target_duration_range, debug_artifacts
 
 
 def write_debug_artifacts(output_dir: str, debug_artifacts: dict | None) -> dict:
@@ -1834,6 +1848,29 @@ def run_pipeline(
             thinking_mode=thinking_mode,
             progress_callback=progress_callback,
         )
+        if response.get("selection_status") == "ok" and validation_errors:
+            selection_error_kind = "model_output_validation"
+            if debug_artifacts.get("selection_retry", {}).get("parse_or_validation_error"):
+                selection_error_kind = "model_output_parse"
+            raise BiteBuilderError(build_validation_error(
+                code=(
+                    "MODEL-RESPONSE-PARSE-ERROR"
+                    if selection_error_kind == "model_output_parse"
+                    else "MODEL-RESPONSE-INVALID"
+                ),
+                error_type="runtime_model_output",
+                message="Model output did not pass validation.",
+                expected_input_format="A valid JSON selection response from Ollama.",
+                next_action="Review model output in debug artifacts, update constraints, and retry.",
+                stage="selection",
+                recoverable=True,
+                details={
+                    "selection_errors": validation_errors,
+                    "selection_retry": debug_artifacts.get("selection_retry", {}),
+                },
+            ))
+    except BiteBuilderError:
+        raise
     except Exception as exc:
         error = build_validation_error(
             code="SELECTION-FAILED",
@@ -1898,6 +1935,7 @@ def run_pipeline(
         "response": response,
         "validation_errors": validation_errors,
         "used_retry": used_retry,
+        "selection_retry": debug_artifacts.get("selection_retry", {}),
         "output_files": output_files,
         "debug_path": debug_path,
         "debug_files": debug_files,

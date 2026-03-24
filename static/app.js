@@ -1,4 +1,5 @@
 const STORAGE_KEY = "bitebuilder.studio.draft.v2";
+const WORKFLOW_OPERATION_SNAPSHOTS = ["received", "validating", "prompting", "generating", "finalizing"];
 
 function createEmptyPlan() {
   return {
@@ -45,6 +46,8 @@ function createDefaultState() {
     currentJob: null,
     currentJobStatus: "",
     currentJobLogs: [],
+    lastError: null,
+    lastOperation: null,
     lastGeneration: null,
   };
 }
@@ -85,6 +88,9 @@ let modelLookupMessage = "";
 
 const pageKey = document.body.dataset.page || "";
 const pageStatus = document.querySelector("[data-page-status]");
+const pageStatusMessage = pageStatus ? pageStatus.querySelector("[data-page-message]") : null;
+const pageErrorContainer = pageStatus ? pageStatus.querySelector("[data-page-error]") : null;
+const pageSnapshotContainer = pageStatus ? pageStatus.querySelector("[data-page-snapshot]") : null;
 const stepLinks = Array.from(document.querySelectorAll("[data-step-link]"));
 const modelSelect = document.getElementById("modelSelect");
 const thinkingModeSelect = document.getElementById("thinkingModeSelect");
@@ -138,7 +144,7 @@ function persistState() {
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
-function commitState(patch, { clearGeneration = false } = {}) {
+function commitState(patch, { clearGeneration = false, clearError = false } = {}) {
   const normalizedPatch = normalizeStatePatch(patch);
   state = {
     ...state,
@@ -149,15 +155,182 @@ function commitState(patch, { clearGeneration = false } = {}) {
   if (clearGeneration) {
     state.lastGeneration = null;
   }
+  if (clearError) {
+    state.lastError = null;
+    state.lastOperation = null;
+  }
 
   persistState();
   renderAll();
 }
 
 function setStatus(message) {
+  if (pageStatusMessage) {
+    pageStatusMessage.textContent = message || "";
+    return;
+  }
   if (pageStatus) {
     pageStatus.textContent = message;
   }
+}
+
+function clearInlineError() {
+  if (!pageErrorContainer) {
+    return;
+  }
+  pageErrorContainer.innerHTML = "";
+  pageStatus?.classList.remove("status-error");
+  if (pageStatusMessage) {
+    pageStatusMessage.classList.remove("status-error");
+  }
+  [briefInput, contextInput, projectNotesInput].forEach((element) => {
+    element?.classList.remove("input-error");
+  });
+  [transcriptFileInput, xmlFileInput, modelSelect, thinkingModeSelect, timeoutInput].forEach((element) => {
+    element?.classList.remove("input-error");
+  });
+}
+
+function operationStageFromMessage(message) {
+  const text = String(message || "").toLowerCase();
+  if (text.includes("parsing transcript") || text.includes("parsing premiere xml") || text.includes("resolving local model")) {
+    return "validating";
+  }
+  if (text.includes("summarizing editorial direction") || text.includes("running generation attempt")) {
+    return "prompting";
+  }
+  if (text.includes("writing output files")) {
+    return "finalizing";
+  }
+  if (text.includes("selection complete") || text.includes("selection")) {
+    return "generating";
+  }
+  return "generating";
+}
+
+function operationStageFromErrorStage(stage) {
+  if (stage === "transcript" || stage === "premiere_xml") {
+    return "validating";
+  }
+  if (stage === "selection" || stage === "output") {
+    return "generating";
+  }
+  if (stage === "model" || stage === "brief") {
+    return "prompting";
+  }
+  return operationStageFromMessage("");
+}
+
+function formatSnapshotHtml(snapshot = {}) {
+  if (!pageSnapshotContainer) {
+    return "";
+  }
+  const current = snapshot.stage || "received";
+  const messages = snapshot.log
+    ? `<div class="snapshot-line"><strong>Snapshot:</strong><span>${snapshot.log}</span></div>`
+    : "";
+  return `
+    <div class="operation-snapshot">
+      <div class="snapshot-line">
+        ${WORKFLOW_OPERATION_SNAPSHOTS.map((item) => `<span class="snapshot-chip${item === current ? " is-active" : ""}">${item}</span>`).join("")}
+      </div>
+      ${messages}
+    </div>
+  `;
+}
+
+function commitOperationSnapshot(message, operation = "generation") {
+  const stage = operationStageFromMessage(message);
+  state = { ...state, lastOperation: { ...(state.lastOperation || {}), operation, stage, message } };
+  persistState();
+  if (pageSnapshotContainer) {
+    pageSnapshotContainer.innerHTML = formatSnapshotHtml(state.lastOperation);
+  }
+}
+
+function clearOperationSnapshot() {
+  if (pageSnapshotContainer) {
+    pageSnapshotContainer.innerHTML = "";
+  }
+}
+
+function fixErrorAction(error) {
+  const stage = (error && error.stage) || "";
+  if (stage === "transcript") {
+    return "/project/intake";
+  }
+  if (stage === "premiere_xml") {
+    return "/project/intake";
+  }
+  if (stage === "brief") {
+    return "/project/brief";
+  }
+  if (stage === "model") {
+    return "/project/chat";
+  }
+  if (stage === "selection" || stage === "output") {
+    return "/project/generate";
+  }
+  return "/";
+}
+
+function updateFieldErrors(error) {
+  if (!error || !error.stage) {
+    return;
+  }
+  if (error.stage === "transcript") {
+    transcriptFileInput?.classList.add("input-error");
+  }
+  if (error.stage === "premiere_xml") {
+    xmlFileInput?.classList.add("input-error");
+  }
+  if (error.stage === "brief") {
+    briefInput?.classList.add("input-error");
+  }
+  if (error.stage === "model") {
+    modelSelect?.classList.add("input-error");
+  }
+}
+
+function showError(error, operation) {
+  if (!error) {
+    return;
+  }
+  clearInlineError();
+  state.lastError = error;
+  state.lastOperation = {
+    ...(state.lastOperation || {}),
+    operation,
+    stage: (error.stage && operationStageFromErrorStage(error.stage))
+      || state.lastOperation?.stage
+      || operationStageFromMessage(error.message),
+    message: error.message || "Operation failed.",
+  };
+  persistState();
+
+  if (pageErrorContainer) {
+    const canFix = error.stage || operation;
+    const fixHref = canFix ? fixErrorAction(error) : "#";
+    const retryLabel = operation === "preview" ? "Try again (Preview)" : "Try again (Generate)";
+    const fixLabel = canFix ? "Fix inputs" : "Open relevant step";
+    pageErrorContainer.innerHTML = `
+      <h3>Error: ${escapeHtml(error.code || "operation_failed")}</h3>
+      <p>${escapeHtml(error.message || "An operation did not complete.")}</p>
+      <p><strong>Expected format:</strong> ${escapeHtml(error.expected_input_format || "Review inputs and retry.")}</p>
+      <p><strong>Next action:</strong> ${escapeHtml(error.next_action || "Retry after updates.")}</p>
+      <div class="actions">
+        <a class="button button-secondary" href="${fixHref}">${fixLabel}</a>
+        <button class="button" type="button" data-recover-action="retry">${escapeHtml(retryLabel)}</button>
+      </div>
+    `;
+    pageStatus?.classList.add("status-error");
+  }
+  if (error.stage) {
+    updateFieldErrors(error);
+  }
+  setStatus(`${error.message}`);
+  renderOperationSnapshot();
+  renderStepLinks();
 }
 
 function sanitizeFilename(value, fallback = "project") {
@@ -700,11 +873,17 @@ async function refreshTranscriptSegments() {
     });
     const payload = await response.json();
     if (!response.ok) {
-      throw new Error(payload.error || "Could not parse transcript.");
+      throw (payload && payload.error) ? payload.error : { message: "Could not parse transcript." };
     }
     commitState({ transcriptSegments: payload.segments || [] }, { clearGeneration: false });
   } catch (error) {
-    setStatus(error.message);
+    showError({
+      code: "TRANSCRIPT-PARSE",
+      message: error.message || "Could not parse transcript.",
+      stage: "transcript",
+      expected_input_format: "Timecoded transcript blocks as HH:MM:SS:FF - HH:MM:SS:FF.",
+      next_action: "Fix the transcript and retry parsing.",
+    }, "validate");
   }
 }
 
@@ -844,6 +1023,7 @@ function stepRule(stepKey) {
 }
 
 function renderPageStatus() {
+  renderOperationSnapshot();
   if (!pageStatus) {
     return;
   }
@@ -897,6 +1077,27 @@ function renderPageStatus() {
     default:
       break;
   }
+}
+
+function renderOperationSnapshot() {
+  if (!pageSnapshotContainer) {
+    return;
+  }
+  if (state.lastOperation && state.lastOperation.message) {
+    pageSnapshotContainer.innerHTML = formatSnapshotHtml({
+      stage: state.lastOperation.stage || "received",
+      log: state.lastOperation.message || "",
+    });
+    return;
+  }
+  if (state.currentJob && state.currentJobStatus) {
+    pageSnapshotContainer.innerHTML = formatSnapshotHtml({
+      stage: "generating",
+      log: state.currentJobStatus,
+    });
+    return;
+  }
+  pageSnapshotContainer.innerHTML = "";
 }
 
 function renderStepLinks() {
@@ -1018,6 +1219,11 @@ function renderResults(payload) {
   const targetLine = payload.target_duration_range
     ? `Target: ${payload.target_duration_range[0]}-${payload.target_duration_range[1]}s | Thinking: ${payload.thinking_mode}`
     : `Thinking: ${payload.thinking_mode}`;
+  const retryHtml = payload.used_retry
+    ? `<div class="result-card"><strong>LLM validation recovery</strong><div class="result-meta">One correction retry was used before write.</div>`
+      + `${(payload.selection_retry?.errors || []).length ? `<div class="result-meta">${escapeHtml((payload.selection_retry.errors || []).join(" | "))}</div>` : ""}`
+      + `</div>`
+    : "";
   const warningHtml = payload.validation_errors && payload.validation_errors.length
     ? `<div class="result-card"><strong>Warnings</strong><div class="result-meta">${payload.validation_errors.map(escapeHtml).join("<br>")}</div></div>`
     : "";
@@ -1074,6 +1280,7 @@ function renderResults(payload) {
         <a href="/project/logs">Open logs</a>
       </div>
     </div>
+    ${retryHtml}
     ${warningHtml}
     ${traceHtml}
     ${fileHtml}
@@ -1378,6 +1585,11 @@ function renderAll() {
   renderStateSnapshot();
   renderStepLinks();
   renderPageStatus();
+  if (state.lastError) {
+    showError(state.lastError, state.lastOperation?.operation || null);
+  } else {
+    clearInlineError();
+  }
   renderIntake();
   renderBrief();
   renderChat();
@@ -1495,6 +1707,7 @@ async function loadFile(file, kind) {
       requiredSegmentIndexes: [],
       lockedSegmentIndexes: [],
       forcedOpenSegmentIndex: null,
+      lastError: null,
     }, { clearGeneration: true });
     await refreshTranscriptSegments();
   } else {
@@ -1502,6 +1715,7 @@ async function loadFile(file, kind) {
       xmlText: text,
       xmlName: file.name,
       candidateShortlist: [],
+      lastError: null,
     }, { clearGeneration: true });
     await refreshTranscriptSegments();
   }
@@ -1578,19 +1792,34 @@ async function sendChat() {
 
     const payload = await response.json();
     if (!response.ok) {
-      throw new Error(payload.error || "Chat failed.");
+      throw payload;
     }
 
     commitState({
       messages: [...nextMessages, { role: "assistant", content: payload.reply }],
       suggestedPlan: payload.suggested_plan || createEmptyPlan(),
     });
+    state.lastOperation = null;
+    state.lastError = null;
+    commitState({}, { clearError: true });
     setStatus(`Reply received from ${payload.host}.`);
   } catch (error) {
-    commitState({
-      messages: [...nextMessages, { role: "assistant", content: `Chat failed: ${error.message}` }],
-    });
-    setStatus(error.message);
+    const details = error.error || {
+      code: "CHAT-FAILED",
+      message: error.message || "Chat failed.",
+      stage: "model",
+      expected_input_format: "Valid chat request with transcript, brief, and local model.",
+      next_action: "Retry after checking model and input.",
+    };
+    commitState({ messages: [...nextMessages, { role: "assistant", content: `Chat failed: ${details.message || error.message}` }] });
+    showError({
+      code: details.code || "CHAT-FAILED",
+      message: details.message || "Chat failed.",
+      stage: details.stage || "model",
+      expected_input_format: details.expected_input_format || "Valid chat request with transcript, brief, and local model.",
+      next_action: details.next_action || "Retry after fixing inputs.",
+    }, "chat");
+    return;
   } finally {
     chatButton.disabled = !isGenerateReady();
   }
@@ -1613,6 +1842,10 @@ async function generateSequences() {
   if (generateButton) {
     generateButton.disabled = true;
   }
+  state.lastError = null;
+  state.lastOperation = { operation: "generate", stage: "received", message: "Received generation request." };
+  persistState();
+  commitOperationSnapshot("Generation request received", "generate");
   setStatus("Starting generation...");
 
   try {
@@ -1623,7 +1856,7 @@ async function generateSequences() {
     });
     const payload = await response.json();
     if (!response.ok) {
-      throw new Error(payload.error || "Generation failed.");
+      throw payload;
     }
     commitState({
       currentJob: payload.job_id,
@@ -1632,7 +1865,19 @@ async function generateSequences() {
     });
     await pollGenerationJob(payload.job_id);
   } catch (error) {
-    setStatus(error.message);
+    const details = error.error || error;
+    showError({
+      code: details.code || "GENERATE-REQUEST-FAILED",
+      message: details.message || "Generation failed.",
+      stage: details.stage || "model",
+      expected_input_format: details.expected_input_format || "Valid transcript, XML, brief and model settings.",
+      next_action: details.next_action || "Fix inputs and retry.",
+    }, "generate");
+    commitState({
+      currentJob: null,
+      currentJobStatus: "",
+      currentJobLogs: [],
+    });
   } finally {
     if (generateButton) {
       generateButton.disabled = !isGenerateReady();
@@ -1646,13 +1891,16 @@ async function pollGenerationJob(jobId) {
     const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`);
     const payload = await response.json();
     if (!response.ok) {
-      throw new Error(payload.error || "Could not read job.");
+      throw payload;
     }
+    const operationMessage = payload.logs?.at(-1)?.message;
     commitState({
       currentJob: jobId,
       currentJobStatus: payload.status,
       currentJobLogs: payload.logs || [],
+      lastError: null,
     });
+    commitOperationSnapshot(operationMessage || payload.status, "generate");
     if (payload.status === "completed") {
       pushRunHistory(payload.result);
       commitState({
@@ -1663,7 +1911,19 @@ async function pollGenerationJob(jobId) {
       return;
     }
     if (payload.status === "error") {
-      throw new Error(payload.error || "Generation failed.");
+      throw payload;
+    }
+    if (payload.status === "partial") {
+      state.lastOperation = { operation: "generate", stage: "selection", message: payload.error?.message || "Selection failed. Retry when ready." };
+      state.lastError = payload.error;
+      persistState();
+      commitState({
+        currentJob: null,
+        currentJobStatus: "partial",
+        currentJobLogs: payload.logs || [],
+      });
+      renderAll();
+      return;
     }
     setStatus(payload.logs?.at(-1)?.message || "Generating...");
     await new Promise((resolve) => window.setTimeout(resolve, 1200));
@@ -1685,12 +1945,23 @@ async function previewShortlist() {
     });
     const payload = await response.json();
     if (!response.ok) {
-      throw new Error(payload.error || "Could not preview shortlist.");
+      throw payload;
     }
     commitState({ candidateShortlist: payload.candidates || [] }, { clearGeneration: false });
+    state.lastOperation = { operation: "preview", stage: "completed", message: "Preview completed." };
+    state.lastError = null;
+    persistState();
+    clearInlineError();
     setStatus(`Previewed ${payload.count || 0} candidates.`);
   } catch (error) {
-    setStatus(error.message);
+    const details = error.error || error;
+    showError({
+      code: details.code || "PREVIEW-FAILED",
+      message: details.message || "Could not preview shortlist.",
+      stage: details.stage || "transcript",
+      expected_input_format: details.expected_input_format || "Valid files, brief, and optional model constraints.",
+      next_action: details.next_action || "Fix inputs and retry preview.",
+    }, "preview");
   }
 }
 
@@ -1712,12 +1983,19 @@ async function writeManualXml() {
     });
     const payload = await response.json();
     if (!response.ok) {
-      throw new Error(payload.error || "Could not render manual XML.");
+      throw payload;
     }
     pushRunHistory(payload);
     window.location.assign("/project/export");
   } catch (error) {
-    setStatus(error.message);
+    const details = error.error || error;
+    showError({
+      code: details.code || "MANUAL-RENDER-FAILED",
+      message: details.message || "Could not render manual XML.",
+      stage: details.stage || "transcript",
+      expected_input_format: details.expected_input_format || "Valid manual lane and XML/transcript content.",
+      next_action: details.next_action || "Fix inputs and retry.",
+    }, "generate");
   }
 }
 
@@ -1735,11 +2013,18 @@ async function openCurrentOutputFolder() {
     });
     const payload = await response.json();
     if (!response.ok) {
-      throw new Error(payload.error || "Could not open folder.");
+      throw payload.error || { message: "Could not open folder." };
     }
     setStatus(payload.message || "Opened output folder.");
   } catch (error) {
-    setStatus(error.message);
+    const details = error;
+    showError({
+      code: details.code || "OPEN-FOLDER-FAILED",
+      message: details.message || "Could not open folder.",
+      stage: "output",
+      expected_input_format: "A completed run with an available output folder.",
+      next_action: "Retry opening the output folder from Download.",
+    }, "generate");
   }
 }
 
@@ -1841,31 +2126,37 @@ function bindPersistentFields() {
   if (projectTitleInput) {
     projectTitleInput.addEventListener("input", (event) => {
       commitState({ projectTitle: event.target.value }, { clearGeneration: false });
+      if (state.lastError) {
+        commitState({ lastError: null }, { clearError: true });
+      }
     });
   }
   if (projectNotesInput) {
     projectNotesInput.addEventListener("input", (event) => {
       commitState({ projectNotes: event.target.value }, { clearGeneration: false });
+      if (state.lastError) {
+        commitState({ lastError: null }, { clearError: true });
+      }
     });
   }
   if (briefInput) {
     briefInput.addEventListener("input", (event) => {
-      commitState({ brief: event.target.value }, { clearGeneration: true });
+      commitState({ brief: event.target.value }, { clearGeneration: true, clearError: true });
     });
   }
   if (contextInput) {
     contextInput.addEventListener("input", (event) => {
-      commitState({ projectContext: event.target.value }, { clearGeneration: true });
+      commitState({ projectContext: event.target.value }, { clearGeneration: true, clearError: true });
     });
   }
   if (optionsInput) {
     optionsInput.addEventListener("input", (event) => {
-      commitState({ options: Number(event.target.value || 3) }, { clearGeneration: true });
+      commitState({ options: Number(event.target.value || 3) }, { clearGeneration: true, clearError: true });
     });
   }
   if (timeoutInput) {
     timeoutInput.addEventListener("input", (event) => {
-      commitState({ timeout: Number(event.target.value || 180) }, { clearGeneration: true });
+      commitState({ timeout: Number(event.target.value || 180) }, { clearGeneration: true, clearError: true });
     });
   }
   if (variantNameInput) {
@@ -1875,18 +2166,42 @@ function bindPersistentFields() {
   }
   if (speakerBalanceSelect) {
     speakerBalanceSelect.addEventListener("change", (event) => {
-      commitState({ speakerBalance: event.target.value }, { clearGeneration: true });
+      commitState({ speakerBalance: event.target.value }, { clearGeneration: true, clearError: true });
     });
   }
   if (thinkingModeSelect) {
     thinkingModeSelect.addEventListener("change", (event) => {
-      commitState({ thinkingMode: event.target.value }, { clearGeneration: true });
+      commitState({ thinkingMode: event.target.value }, { clearGeneration: true, clearError: true });
     });
   }
   if (modelSelect) {
     modelSelect.addEventListener("change", (event) => {
-      commitState({ model: event.target.value }, { clearGeneration: true });
+      commitState({ model: event.target.value }, { clearGeneration: true, clearError: true });
     });
+  }
+}
+
+function retryLastOperation() {
+  if (!state.lastOperation?.operation) {
+    return;
+  }
+  if (state.lastOperation.operation === "preview") {
+    void previewShortlist();
+    return;
+  }
+  if (state.lastOperation.operation === "generate") {
+    void generateSequences();
+    return;
+  }
+  if (state.lastOperation.operation === "chat") {
+    const lastUserMessage = (state.messages || [])
+      .slice()
+      .reverse()
+      .find((message) => message.role === "user");
+    if (chatInput && lastUserMessage?.content) {
+      chatInput.value = lastUserMessage.content;
+    }
+    void sendChat();
   }
 }
 
@@ -2050,6 +2365,18 @@ function bindEvents() {
   }
 
   document.addEventListener("click", (event) => {
+    const recoverAction = event.target.closest("[data-recover-action]");
+    if (recoverAction) {
+      const action = recoverAction.dataset.recoverAction;
+      if (action === "retry") {
+        event.preventDefault();
+        commitState({ lastError: null }, { clearError: true });
+        clearInlineError();
+        retryLastOperation();
+      }
+      return;
+    }
+
     const segmentButton = event.target.closest("[data-segment-action]");
     if (segmentButton) {
       const index = Number(segmentButton.dataset.segmentIndex);

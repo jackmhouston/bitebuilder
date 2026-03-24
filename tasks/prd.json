@@ -66,11 +66,12 @@
         "Show retry status and validation failure reason in the UI"
       ],
       "priority": 4,
-      "passes": false,
+      "passes": true,
       "dependsOn": [
         "US-002",
         "US-003"
-      ]
+      ],
+      "completionNotes": "Completed by agent"
     },
     {
       "id": "US-005",
@@ -84,8 +85,9 @@
         "Allow resume at each step without re-uploading transcript/XML content"
       ],
       "priority": 5,
-      "passes": false,
-      "dependsOn": []
+      "passes": true,
+      "dependsOn": [],
+      "completionNotes": "Completed by agent"
     },
     {
       "id": "US-006",
@@ -124,6 +126,6 @@
     }
   ],
   "metadata": {
-    "updatedAt": "2026-03-24T03:28:21.862Z"
+    "updatedAt": "2026-03-24T03:32:32.631Z"
   }
 }

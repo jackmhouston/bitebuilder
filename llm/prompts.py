@@ -329,6 +329,7 @@ def validate_llm_response(
     valid_timecodes: set[str],
     valid_candidate_timecodes: set[tuple[str, str]] | None = None,
     expected_options: int | None = None,
+    transcript_segments: list | None = None,
 ) -> list[str]:
     """
     Validate the LLM's JSON response against the transcript.
@@ -342,6 +343,9 @@ def validate_llm_response(
         List of error strings. Empty list = valid.
     """
     errors = []
+    segment_pairs = {}
+    if transcript_segments is not None:
+        segment_pairs = {(segment.tc_in, segment.tc_out): index for index, segment in enumerate(transcript_segments)}
 
     if response.get("selection_status") == "no_candidates":
         if response.get("options"):
@@ -401,6 +405,11 @@ def validate_llm_response(
                         f"Must use exact timecodes from the transcript."
                     )
 
+            pair = (cut.get("tc_in"), cut.get("tc_out"))
+            transcript_index = segment_pairs.get(pair) if pair is not None and segment_pairs else None
+            if segment_pairs and pair and pair[0] is not None and pair[1] is not None and transcript_index is None:
+                errors.append(f"{cut_prefix}: tc_in/tc_out pair does not match a transcript segment definition.")
+
             if (
                 valid_candidate_timecodes is not None
                 and isinstance(cut.get('tc_in'), str)
@@ -408,6 +417,12 @@ def validate_llm_response(
                 and (cut['tc_in'], cut['tc_out']) not in valid_candidate_timecodes
             ):
                 errors.append(f"{cut_prefix}: tc_in/tc_out pair must match a candidate segment.")
+
+            if transcript_index is not None and "segment_index" in cut:
+                if cut["segment_index"] != transcript_index:
+                    errors.append(
+                        f"{cut_prefix}: segment_index '{cut['segment_index']}' does not match a transcript segment definition for {cut['tc_in']}-{cut['tc_out']}."
+                    )
 
             if 'tc_in' in cut and 'tc_out' in cut:
                 if cut['tc_in'] >= cut['tc_out']:

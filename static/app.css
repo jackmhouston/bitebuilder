@@ -296,6 +296,8 @@ pre,
 .stat-card,
 .summary-card,
 .result-card {
+  display: grid;
+  gap: 8px;
   padding: 10px;
   border: 1px solid var(--ink);
   background: var(--paper);
@@ -307,6 +309,53 @@ pre,
 .status-box {
   min-height: 120px;
   overflow: auto;
+}
+
+[data-page-error] {
+  display: grid;
+  gap: 8px;
+}
+
+.status-error {
+  border-color: var(--drop-border);
+  background: var(--drop-bg);
+  color: var(--drop-ink);
+}
+
+.status-error h3,
+.status-error p {
+  margin: 0;
+}
+
+.operation-snapshot {
+  display: grid;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed #ccc;
+  font-size: 12px;
+}
+
+.snapshot-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.snapshot-chip {
+  padding: 2px 8px;
+  border: 1px solid var(--ink);
+  font-size: 11px;
+}
+
+.snapshot-chip.is-active {
+  background: var(--paper-muted);
+  font-weight: bold;
+}
+
+.input-error {
+  outline: 2px solid var(--drop-border);
+  outline-offset: 1px;
 }
 
 .chat-log {

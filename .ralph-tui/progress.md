@@ -19,11 +19,91 @@ after each iteration and it's included in prompts for context.
 - For partial recovery, include a `partial` object with current progress state and stage.
 - For transcript validation, parse once with explicit `strict` mode and normalize failures into a list of `{line, field, message, context}` objects, then map directly to structured payloads before selection starts.
 
+### Validation separation pattern (Schema + Warnings)
+- Keep hard-validation and warning collections separate.
+- Return hard validation errors (`validation_errors`) only when selection output violates schema or constraints.
+- Track optimization/duration notices under warning metadata to avoid blocking valid generations.
+
 ### Deterministic LLM selection pattern
 - Keep the same schema contract in prompt text and validator code, including explicit status values and fallback structure.
 - Enforce candidate-boundary constraints using exact `tc_in`/`tc_out` pairs from shortlisted segments.
 - Add explicit confidence score requirements on every cut and reject out-of-range values.
 
+
+### Recoverable UI workflow pattern (webapp)
+- Keep a single `state` object as the recovery source of truth for form values plus recent operation snapshots, so each failure can be resumed without re-uploading files.
+- Map backend operation states into a compact stage enum and render both inline user errors plus snapshots in the shared status surface (`data-page-message`, `data-page-error`, `data-page-snapshot`).
+- Use explicit recovery actions (`fix`, `retry`, `resume`) that mutate only one state transition at a time, preserving all entered values unless they are intentionally corrected.
+
+
+## 2026-03-24 - US-005
+- Implemented UI workflow status and recoverability enhancements in the Flask experience so users can see clear step progression and recover from failures without re-uploading data.
+- Renamed and aligned workflow steps to: Upload, Validate, Preview/Confirm, Generate, Download.
+- Added multi-channel operation visibility with per-step snapshots for:
+  - received
+  - validating
+  - prompting
+  - generating
+  - finalizing
+- Implemented inline error rendering on each UI page with:
+  - operation/error code
+  - actionable message
+  - expected input format
+  - next action
+  - Fix inputs and Try again controls
+- Wired recoverable state retention across failure paths:
+  - transcript
+  - XML content
+  - brief context
+  - chat and short list content
+  - selected segment edits
+- Kept generation and export flows resumable after recoverable errors by preserving server payloads and reusing cached state in page operations.
+- Files changed:
+  - [webapp.py](/home/dietrich001/bitebuilder/webapp.py)
+  - [static/app.js](/home/dietrich001/bitebuilder/static/app.js)
+  - [static/app.css](/home/dietrich001/bitebuilder/static/app.css)
+  - [templates/context.html](/home/dietrich001/bitebuilder/templates/context.html)
+  - [templates/copilot.html](/home/dietrich001/bitebuilder/templates/copilot.html)
+  - [templates/export.html](/home/dietrich001/bitebuilder/templates/export.html)
+  - [templates/generate.html](/home/dietrich001/bitebuilder/templates/generate.html)
+  - [templates/intake.html](/home/dietrich001/bitebuilder/templates/intake.html)
+  - [.ralph-tui/progress.md](/home/dietrich001/bitebuilder/.ralph-tui/progress.md)
+- **Learnings:**
+  - Patterns discovered:
+    - Front-end recovery is easier when every failure writes both an error object and a resilient fallback state snapshot before a rerender.
+    - Reusing the same status container (message/error/snapshot) across all workflow pages reduces template drift and makes acceptance testing easier.
+    - Mapping backend error `stage` to UI operation enum in one helper keeps snapshot transitions deterministic and debuggable.
+  - Gotchas encountered:
+    - `refreshTranscriptSegments` path can fail during transcript parsing and needed dedicated `validate`-stage mapping, otherwise generated status stuck at stale preview state.
+    - Template-level status markers were inconsistent (`data-page-status` typo and mixed containers), so page-level rendering failed silently until aligned.
+    - Recovery controls had to be wired to explicit operation labels to avoid launching resume logic against stale job state.
+---
+
+## 2026-03-24 - US-004
+- Added bounded one-shot LLM recovery and strict fail-safe gating before XML write.
+- Added segment-definition boundary validation in `validate_llm_response` using transcript segment pairs.
+- Blocked XML generation when model output fails parse/validation after retries.
+- Added structured selection-retry telemetry for UI and debug artifacts:
+  - `used_retry`
+  - `selection_retry.attempted`
+  - `selection_retry.errors`
+  - `selection_retry.parse_or_validation_error`
+- Updated web payload serialization and UI result card to show when correction retry occurred and why.
+- Files changed:
+  - [llm/prompts.py](/home/dietrich001/bitebuilder/llm/prompts.py)
+  - [bitebuilder.py](/home/dietrich001/bitebuilder/bitebuilder.py)
+  - [webapp.py](/home/dietrich001/bitebuilder/webapp.py)
+  - [static/app.js](/home/dietrich001/bitebuilder/static/app.js)
+  - [tests/test_pipeline.py](/home/dietrich001/bitebuilder/tests/test_pipeline.py)
+  - [.ralph-tui/progress.md](/home/dietrich001/bitebuilder/.ralph-tui/progress.md)
+- **Learnings:**
+  - Patterns discovered:
+    - Preserve `BiteBuilderError` in selection flow; rewrapping all exceptions hides meaningful model-output codes.
+    - Separating warnings from validation failures prevents false negative pipeline aborts after a successful LLM pass.
+  - Gotchas encountered:
+    - Candidate/segment mismatch messages needed to explicitly include "transcript segment definition" for test and operator clarity.
+    - Retry metadata is easier to use in UI debugging when captured on every generation attempt.
+---
 
 ## 2026-03-24 - US-003
 - Added stricter LLM guardrails for schema compliance, candidate-aligned outputs, and deterministic behavior.

@@ -56,17 +56,17 @@ PROJECT_FILE_EXTENSIONS = (".bitebuilder-project.json", ".json")
 APP_STEPS = (
     {
         "key": "intake",
-        "label": "Files",
+        "label": "Upload",
         "path": "/",
     },
     {
         "key": "brief",
-        "label": "Brief",
+        "label": "Validate",
         "path": "/project/brief",
     },
     {
         "key": "chat",
-        "label": "Chat",
+        "label": "Preview/Confirm",
         "path": "/project/chat",
     },
     {
@@ -76,7 +76,7 @@ APP_STEPS = (
     },
     {
         "key": "export",
-        "label": "Export",
+        "label": "Download",
         "path": "/project/export",
     },
 )
@@ -417,6 +417,8 @@ def serialize_generation_result(run_id: str, run_dir: Path, result: dict) -> dic
         "thinking_mode": result["thinking_mode"],
         "target_duration_range": result["target_duration_range"],
         "validation_errors": result["validation_errors"],
+        "used_retry": result.get("used_retry", False),
+        "selection_retry": result.get("selection_retry", {}),
         "debug_download_url": f"/api/output/{run_id}/_llm_response.json",
         "debug_files": debug_urls,
         "candidate_shortlist": candidate_shortlist,
@@ -473,7 +475,7 @@ def create_app() -> Flask:
             "intake.html",
             **build_page_context(
                 page_key="intake",
-                page_title="Files",
+                page_title="Upload",
             ),
         )
 
@@ -487,7 +489,7 @@ def create_app() -> Flask:
             "context.html",
             **build_page_context(
                 page_key="brief",
-                page_title="Brief",
+                page_title="Validate",
             ),
         )
 
@@ -501,7 +503,7 @@ def create_app() -> Flask:
             "copilot.html",
             **build_page_context(
                 page_key="chat",
-                page_title="Chat",
+                page_title="Preview/Confirm",
             ),
         )
 

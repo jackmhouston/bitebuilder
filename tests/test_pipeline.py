@@ -133,6 +133,36 @@ class BiteBuilderPipelineTests(unittest.TestCase):
         errors = validate_llm_response(MOCK_RESPONSE, get_valid_timecodes(segments))
         self.assertEqual(errors, [])
 
+    def test_validate_llm_response_checks_segment_definition_boundaries(self):
+        segments = parse_transcript_file(str(TRANSCRIPT_FIXTURE))
+        response = {
+            "selection_status": "ok",
+            "options": [
+                {
+                    "name": "Mismatch",
+                    "description": "Wrong segment mapping on purpose.",
+                    "estimated_duration_seconds": 10,
+                    "cuts": [{
+                        "order": 1,
+                        "segment_index": 1,
+                        "tc_in": "00:00:00:00",
+                        "tc_out": "00:00:05:00",
+                        "speaker": "Speaker 1",
+                        "confidence": 0.91,
+                        "purpose": "HOOK",
+                        "dialogue_summary": "Mismatch test.",
+                    }],
+                },
+            ],
+        }
+        errors = validate_llm_response(
+            response=response,
+            valid_timecodes=get_valid_timecodes(segments),
+            expected_options=1,
+            transcript_segments=segments,
+        )
+        self.assertTrue(any("does not match a transcript segment definition" in error for error in errors))
+
     def test_build_user_prompt_includes_editorial_conversation(self):
         segments = parse_transcript_file(str(TRANSCRIPT_FIXTURE))
         formatted = format_for_llm(segments)
@@ -292,6 +322,58 @@ class BiteBuilderPipelineTests(unittest.TestCase):
 
             debug_response = json.loads((output_dir / "_llm_response.json").read_text())
             self.assertEqual(len(debug_response["options"]), 2)
+
+    def test_generate_edit_options_retries_once_then_succeeds(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir) / "output"
+            with patch("bitebuilder.ollama_generate", side_effect=[
+                {"selection_status": "ok", "options": []},
+                MOCK_RESPONSE,
+            ]), \
+                 patch("bitebuilder.ensure_ollama_ready", return_value=("http://127.0.0.1:11435", ["qwen3:8b"])), \
+                 redirect_stdout(io.StringIO()), \
+                 redirect_stderr(io.StringIO()):
+                result = run_pipeline(
+                    transcript_text=TRANSCRIPT_FIXTURE.read_text(encoding="utf-8"),
+                    xml_text=XML_FIXTURE.read_text(encoding="utf-8"),
+                    brief="45 second proof of concept",
+                    options=2,
+                    output_dir=str(output_dir),
+                )
+
+            self.assertEqual(output_dir.exists(), True)
+            generated = sorted(output_dir.glob("*.xml"))
+            self.assertEqual([path.name for path in generated], [
+                "Margin_Story.xml",
+                "Proof_Points.xml",
+            ])
+            self.assertTrue(result["used_retry"])
+            self.assertEqual(result["selection_retry"].get("attempted"), True)
+            self.assertTrue(result["selection_retry"].get("errors"))
+
+            debug_response = json.loads((output_dir / "_llm_response.json").read_text())
+            self.assertEqual(len(debug_response["options"]), 2)
+
+    def test_run_pipeline_retries_fail_and_skips_xml_generation(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir) / "output"
+            bad_response = {"selection_status": "ok", "options": []}
+            with patch("bitebuilder.ollama_generate", return_value=bad_response), \
+                 patch("bitebuilder.ensure_ollama_ready", return_value=("http://127.0.0.1:11435", ["qwen3:8b"])), \
+                 redirect_stdout(io.StringIO()), \
+                 redirect_stderr(io.StringIO()):
+                with self.assertRaises(BiteBuilderError) as exc:
+                    run_pipeline(
+                        transcript_text=TRANSCRIPT_FIXTURE.read_text(encoding="utf-8"),
+                        xml_text=XML_FIXTURE.read_text(encoding="utf-8"),
+                        brief="45 second proof of concept",
+                        options=2,
+                        output_dir=str(output_dir),
+                    )
+
+            self.assertEqual(exc.exception.error["code"], "MODEL-RESPONSE-INVALID")
+            if output_dir.exists():
+                self.assertEqual(list(output_dir.iterdir()), [])
 
     def test_generate_selection_no_candidates_returns_noop_response(self):
         with tempfile.TemporaryDirectory() as temp_dir:
