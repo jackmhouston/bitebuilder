@@ -397,6 +397,49 @@ pre,
   min-width: 0;
 }
 
+.bite-card {
+  border-left: 3px solid var(--keep-border);
+  background: var(--keep-bg);
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  font-size: 0.9em;
+}
+
+.bite-card-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.bite-card-label {
+  background: var(--keep-border);
+  color: #fff;
+  padding: 3px 7px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  font-size: 0.75em;
+}
+
+.bite-card-title {
+  font-weight: bold;
+}
+
+.bite-card-timecode {
+  margin-left: auto;
+}
+
+.bite-card-quote {
+  font-style: italic;
+  margin: 4px 0;
+}
+
+.bite-card-why {
+  margin: 4px 0;
+}
+
 .results {
   display: grid;
   gap: 12px;

@@ -3,7 +3,7 @@
   "sessionId": "d1fc2d65-4091-49c3-97d3-543e87a7eba3",
   "status": "running",
   "startedAt": "2026-03-24T04:14:52.649Z",
-  "updatedAt": "2026-03-24T04:15:01.709Z",
+  "updatedAt": "2026-03-24T04:17:19.949Z",
   "currentIteration": 0,
   "maxIterations": 20,
   "tasksCompleted": 0,
@@ -43,8 +43,6 @@
   "iterations": [],
   "skippedTaskIds": [],
   "cwd": "/home/dietrich001/bitebuilder",
-  "activeTaskIds": [
-    "US-001"
-  ],
+  "activeTaskIds": [],
   "subagentPanelVisible": false
 }

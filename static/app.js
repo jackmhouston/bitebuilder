@@ -511,16 +511,16 @@ function renderStateBadges(index) {
   return badges.join("");
 }
 
-function renderChatMessageContent(content) {
-  const source = String(content || "");
+function renderWithSegmentChips(source) {
+  const normalized = String(source || "");
   const parts = [];
   const regex = /\[(\d+)\]/g;
   let cursor = 0;
-  let match = regex.exec(source);
+  let match = regex.exec(normalized);
 
   while (match) {
     const index = Number(match[1]);
-    const textChunk = source.slice(cursor, match.index);
+    const textChunk = normalized.slice(cursor, match.index);
     if (textChunk) {
       parts.push(`<span class="message-body-text">${escapeHtml(textChunk).replace(/\n/g, "<br>")}</span>`);
     }
@@ -537,16 +537,108 @@ function renderChatMessageContent(content) {
       `<button class="${classes.join(" ")}" type="button" data-chat-keep-index="${index}" title="Keep this segment for generate">[${index}]</button>`,
     );
     cursor = match.index + match[0].length;
-    match = regex.exec(source);
+    match = regex.exec(normalized);
   }
 
-  const remainder = source.slice(cursor);
+  const remainder = normalized.slice(cursor);
   if (remainder) {
     parts.push(`<span class="message-body-text">${escapeHtml(remainder).replace(/\n/g, "<br>")}</span>`);
   }
 
   if (!parts.length) {
-    return escapeHtml(source).replace(/\n/g, "<br>");
+    return escapeHtml(normalized).replace(/\n/g, "<br>");
+  }
+
+  return parts.join("");
+}
+
+function renderBiteCardSection(label, titleText, timecodeRange, quoteLine, whyLine) {
+  const pieces = [];
+  pieces.push(
+    [
+      '<div class="bite-card">',
+      '  <div class="bite-card-header">',
+      `    <span class="bite-card-label">${escapeHtml(label)}</span>`,
+      `    <span class="bite-card-title">${escapeHtml(titleText)}</span>`,
+      `    <span class="bite-card-timecode">${escapeHtml(timecodeRange)}</span>`,
+      "  </div>",
+    ].join("\n"),
+  );
+
+  if (quoteLine) {
+    pieces.push(`<div class="bite-card-quote"><em>${renderWithSegmentChips(quoteLine)}</em></div>`);
+  }
+
+  if (whyLine) {
+    pieces.push(`<div class="bite-card-why"><strong>Why it works:</strong> ${renderWithSegmentChips(whyLine)}</div>`);
+  }
+
+  pieces.push("</div>");
+  return pieces.join("\n");
+}
+
+function renderChatMessageContent(content) {
+  const source = String(content || "");
+  const blockPattern = /^\*\*\[(.+?)\](.*)\((\d{2}:\d{2}:\d{2}[:;]\d{2}[\u2013-]\d{2}:\d{2}:\d{2}[:;]\d{2})\)\*\*$/;
+  const quotePattern = /^\*(.+)\*$/;
+  const whyPattern = /^\s*[-*]\s*Why it works:\s*(.+)$/i;
+
+  const lines = source.split("\n");
+  const parts = [];
+  const proseLines = [];
+
+  const flushProse = () => {
+    if (!proseLines.length) {
+      return;
+    }
+    parts.push(renderWithSegmentChips(proseLines.join("\n")));
+    proseLines.length = 0;
+  };
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const rawLine = lines[i];
+    const line = rawLine.trimEnd();
+    const match = line.match(blockPattern);
+
+    if (match) {
+      flushProse();
+
+      const label = (match[1] || "").trim();
+      const titleText = (match[2] || "").trim();
+      const timecodeRange = match[3] || "";
+
+      let quoteLine = "";
+      let whyLine = "";
+
+      const nextLine = lines[i + 1];
+      if (nextLine && quotePattern.test(nextLine.trim()) && !nextLine.trimStart().startsWith("**")) {
+        const matchedQuote = nextLine.trim().match(quotePattern);
+        if (matchedQuote) {
+          quoteLine = matchedQuote[1];
+          i += 1;
+        }
+      }
+
+      const potentialWhyLine = lines[i + 1];
+      if (potentialWhyLine) {
+        const matchedWhy = potentialWhyLine.match(whyPattern);
+        if (matchedWhy) {
+          whyLine = matchedWhy[1];
+          i += 1;
+        }
+      }
+
+      parts.push(renderBiteCardSection(label, titleText, timecodeRange, quoteLine, whyLine));
+      continue;
+    }
+
+    proseLines.push(rawLine);
+  }
+
+  flushProse();
+
+  if (!parts.length) {
+    return renderWithSegmentChips(source);
   }
 
   return parts.join("");
