@@ -17,6 +17,10 @@ DEFAULT_HOST = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
 DEFAULT_TIMEOUT = 180  # seconds — local models can be slow on first inference
 DEFAULT_CONTEXT_TOKENS = int(os.getenv("BITEBUILDER_NUM_CTX", "12288"))
 DEFAULT_THINKING_MODE = os.getenv("BITEBUILDER_THINKING_MODE", "auto")
+DEFAULT_SELECTION_TEMPERATURE = float(os.getenv("BITEBUILDER_SELECTION_TEMPERATURE", "0.0"))
+DEFAULT_SELECTION_SEED = int(os.getenv("BITEBUILDER_SELECTION_SEED", "0"))
+DEFAULT_TEXT_TEMPERATURE = float(os.getenv("BITEBUILDER_TEXT_TEMPERATURE", "0.3"))
+DEFAULT_TEXT_SEED = int(os.getenv("BITEBUILDER_TEXT_SEED", "0"))
 DEFAULT_JSON_PREDICT_TOKENS = 2048
 DEFAULT_TEXT_PREDICT_TOKENS = 768
 FALLBACK_HOSTS = ("http://127.0.0.1:11434", "http://127.0.0.1:11435")
@@ -169,7 +173,8 @@ def generate(
         "format": "json",
         "stream": False,
         "options": {
-            "temperature": 0.2,
+            "temperature": DEFAULT_SELECTION_TEMPERATURE,
+            "seed": DEFAULT_SELECTION_SEED,
             "num_ctx": DEFAULT_CONTEXT_TOKENS,
             "num_predict": DEFAULT_JSON_PREDICT_TOKENS,
         }
@@ -224,7 +229,8 @@ def generate_text(
         "system": system_prompt,
         "stream": False,
         "options": {
-            "temperature": 0.4,
+            "temperature": DEFAULT_TEXT_TEMPERATURE,
+            "seed": DEFAULT_TEXT_SEED,
             "num_ctx": DEFAULT_CONTEXT_TOKENS,
             "num_predict": max(max_tokens, 1536) if normalize_thinking_mode(thinking_mode) == "on" else max_tokens,
         }
@@ -312,6 +318,7 @@ def _repair_json_text(raw_text: str, model: str, host: str, timeout: int) -> str
         "stream": False,
         "options": {
             "temperature": 0,
+            "seed": DEFAULT_SELECTION_SEED,
             "num_ctx": DEFAULT_CONTEXT_TOKENS,
             "num_predict": DEFAULT_JSON_PREDICT_TOKENS,
         },

@@ -11,7 +11,7 @@ SYSTEM_PROMPT = """You are a professional video editor specializing in selecting
 Given a curated pool of candidate transcript segments and a creative brief, select the best soundbites and arrange them into structured edit options. Each option should tell a coherent story with a clear narrative arc.
 
 ## RULES
-1. ONLY use `segment_index` values that appear in the candidate pool. Never invent indexes.
+1. ONLY use candidate `segment_index` values and their exact `tc_in` / `tc_out` boundaries. Never invent indexes.
 2. Each cut uses one complete candidate segment. Do not split or rewrite the transcript.
 3. Spoken dialogue is approximately 2.2 words per second. Use this to estimate duration.
 4. Stay within ±20% of the target duration specified in the brief.
@@ -24,13 +24,17 @@ Given a curated pool of candidate transcript segments and a creative brief, sele
 8. Prefer punchy, quotable lines over long explanations.
 9. It's OK to reorder segments — they don't need to follow the original transcript order.
 10. Avoid segments that are clearly crosstalk, filler, or incomplete thoughts.
-11. Every option must contain at least 3 cuts. Do not return empty options.
-12. You are not writing XML. Python will map `segment_index` values back to exact timecodes and assemble the Premiere XML after you choose the bites.
+11. Every option must contain at least 3 cuts. Do not return empty options unless there are no valid candidates.
+12. You are not writing XML. Each cut must map to exact transcript `tc_in`/`tc_out` pairs from the candidate pool.
+13. A `confidence` score is required on every cut, as a number 0..1.
+14. Configure for repeatable outputs by following deterministic generation settings in the caller (stable temperature + fixed seed).
 
 ## OUTPUT FORMAT
 Respond with ONLY valid JSON matching this exact schema. No other text before or after the JSON.
 
+```json
 {
+  "selection_status": "ok",
   "options": [
     {
       "name": "Short descriptive name",
@@ -40,13 +44,105 @@ Respond with ONLY valid JSON matching this exact schema. No other text before or
         {
           "order": 1,
           "segment_index": 12,
+          "tc_in": "00:00:00:00",
+          "tc_out": "00:00:05:00",
+          "confidence": 0.93,
           "purpose": "HOOK",
           "dialogue_summary": "Brief summary of what's said in this bite"
         }
       ]
     }
   ]
-}"""
+}
+```
+
+If no candidate segments are usable after applying the constraints, return this explicit no-op structure:
+
+```json
+{
+  "selection_status": "no_candidates",
+  "options": [],
+  "no_candidate_reason": "No candidate segments passed hard constraints."
+}
+```
+
+## Example output (valid)
+
+```json
+{
+  "selection_status": "ok",
+  "options": [
+    {
+      "name": "Proof-first hook",
+      "description": "Open on a contrarian claim, then prove with concrete data and close with a button.",
+      "estimated_duration_seconds": 49,
+      "cuts": [
+        {
+          "order": 1,
+          "segment_index": 8,
+          "tc_in": "00:00:40:00",
+          "tc_out": "00:00:44:10",
+          "confidence": 0.95,
+          "purpose": "HOOK",
+          "dialogue_summary": "Openers that challenge the common framing."
+        },
+        {
+          "order": 2,
+          "segment_index": 12,
+          "tc_in": "00:00:52:10",
+          "tc_out": "00:01:00:00",
+          "confidence": 0.89,
+          "purpose": "PROOF",
+          "dialogue_summary": "Concrete metric and timeline that supports the claim."
+        },
+        {
+          "order": 3,
+          "segment_index": 19,
+          "tc_in": "00:01:12:14",
+          "tc_out": "00:01:16:00",
+          "confidence": 0.87,
+          "purpose": "BUTTON",
+          "dialogue_summary": "Clear call-to-action close for a quick follow-up."
+        }
+      ]
+    }
+  ]
+}
+```
+
+## Example output (invalid)
+
+```json
+{
+  "selection_status": "ok",
+  "options": [
+    {
+      "name": "bad example",
+      "description": "Invalid on two points",
+      "estimated_duration_seconds": 49,
+      "cuts": [
+        {
+          "order": 1,
+          "segment_index": 999,
+          "tc_in": "00:00:00:00",
+          "tc_out": "00:00:00:10",
+          "confidence": 1.25,
+          "purpose": "HOOK",
+          "dialogue_summary": "Out of range index and invalid confidence."
+        }
+      ]
+    }
+  ]
+}
+```
+
+```json
+{
+  "selection_status": "ok",
+  "options": []
+}
+```
+"""
 
 
 CHAT_SYSTEM_PROMPT = """You are BiteBuilder's editorial copilot.
@@ -163,7 +259,8 @@ def build_user_prompt(
         "If there is an editorial conversation, treat the latest USER message as the newest direction and let it override earlier tone or style guidance.",
         "Use assistant messages only as supporting context; user messages set the actual target.",
         "Accepted edit decisions are hard requirements. If they specify an opening or must-include bites, honor them.",
-        "Choose only from the candidate pool and return segment_index values. Python will map them back to the exact timecodes.",
+        "Choose only from the candidate pool and return segment_index plus exact tc_in/tc_out timecodes.",
+        "Use deterministic settings at generation time (low temperature + fixed seed) and return confidence for every cut between 0 and 1.",
     ]
 
     if target_duration_range:
@@ -230,6 +327,7 @@ def build_chat_prompt(
 def validate_llm_response(
     response: dict,
     valid_timecodes: set[str],
+    valid_candidate_timecodes: set[tuple[str, str]] | None = None,
     expected_options: int | None = None,
 ) -> list[str]:
     """
@@ -238,11 +336,22 @@ def validate_llm_response(
     Args:
         response: Parsed JSON dict from the LLM
         valid_timecodes: Set of valid TC strings from the transcript
+        valid_candidate_timecodes: Optional set of valid tc_in/tc_out pairs for shortlisted segments.
 
     Returns:
         List of error strings. Empty list = valid.
     """
     errors = []
+
+    if response.get("selection_status") == "no_candidates":
+        if response.get("options"):
+            errors.append("no_candidates response must include an empty options list")
+        if not response.get("no_candidate_reason"):
+            errors.append("no_candidates response missing required no_candidate_reason")
+        return errors
+
+    if response.get("selection_status") != "ok":
+        errors.append("selection_status must be 'ok' or 'no_candidates'")
 
     if 'options' not in response:
         errors.append("Missing 'options' key in response")
@@ -269,15 +378,36 @@ def validate_llm_response(
 
         for j, cut in enumerate(option['cuts']):
             cut_prefix = f"{prefix}, Cut {j+1}"
+            for field in ['segment_index', 'tc_in', 'tc_out', 'confidence', 'purpose']:
+                if field not in cut:
+                    errors.append(f"{cut_prefix}: missing '{field}'")
+
+            confidence = cut.get('confidence')
+            if confidence is not None:
+                if not isinstance(confidence, (int, float)):
+                    errors.append(f"{cut_prefix}: confidence must be a number")
+                elif not (0.0 <= float(confidence) <= 1.0):
+                    errors.append(f"{cut_prefix}: confidence must be between 0 and 1")
+
+            if 'segment_index' in cut and not isinstance(cut['segment_index'], int):
+                errors.append(f"{cut_prefix}: segment_index must be int")
 
             for field in ['tc_in', 'tc_out']:
                 if field not in cut:
-                    errors.append(f"{cut_prefix}: missing '{field}'")
-                elif cut[field] not in valid_timecodes:
+                    continue
+                if cut[field] not in valid_timecodes:
                     errors.append(
                         f"{cut_prefix}: {field}='{cut[field]}' not found in transcript. "
                         f"Must use exact timecodes from the transcript."
                     )
+
+            if (
+                valid_candidate_timecodes is not None
+                and isinstance(cut.get('tc_in'), str)
+                and isinstance(cut.get('tc_out'), str)
+                and (cut['tc_in'], cut['tc_out']) not in valid_candidate_timecodes
+            ):
+                errors.append(f"{cut_prefix}: tc_in/tc_out pair must match a candidate segment.")
 
             if 'tc_in' in cut and 'tc_out' in cut:
                 if cut['tc_in'] >= cut['tc_out']:
@@ -307,4 +437,7 @@ def build_retry_prompt(original_prompt: str, errors: list[str]) -> str:
 The following issues were found. Please fix them and try again:
 {error_text}
 
-Remember: You MUST use valid segment_index values from the candidate pool, return the exact number of requested options, and do not return empty cuts."""
+Remember: Keep `selection_status` in {'ok', 'no_candidates'}. Use only candidate-backed exact timecodes.
+When no valid cuts exist, return `selection_status` `no_candidates`, empty options, and `no_candidate_reason`.
+Every cut must include valid `segment_index`, exact `tc_in`/`tc_out`, and confidence in [0,1].
+"""

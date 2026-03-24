@@ -29,6 +29,7 @@ TRANSCRIPT_FIXTURE = FIXTURES_DIR / "sample_transcript.txt"
 XML_FIXTURE = FIXTURES_DIR / "sample_premiere.xml"
 
 MOCK_RESPONSE = {
+    "selection_status": "ok",
     "options": [
         {
             "name": "Margin Story",
@@ -37,25 +38,31 @@ MOCK_RESPONSE = {
             "cuts": [
                 {
                     "order": 1,
+                    "segment_index": 0,
                     "tc_in": "00:00:00:00",
                     "tc_out": "00:00:05:00",
                     "speaker": "Speaker 1",
+                    "confidence": 0.94,
                     "purpose": "HOOK",
                     "dialogue_summary": "States the common objection.",
                 },
                 {
                     "order": 2,
+                    "segment_index": 1,
                     "tc_in": "00:00:05:00",
                     "tc_out": "00:00:10:00",
                     "speaker": "Speaker 1",
+                    "confidence": 0.92,
                     "purpose": "PROOF",
                     "dialogue_summary": "Explains the operating upside.",
                 },
                 {
                     "order": 3,
+                    "segment_index": 4,
                     "tc_in": "00:00:20:00",
                     "tc_out": "00:00:25:00",
                     "speaker": "Speaker 2",
+                    "confidence": 0.9,
                     "purpose": "BUTTON",
                     "dialogue_summary": "Ends with a call to test the workflow.",
                 },
@@ -68,25 +75,31 @@ MOCK_RESPONSE = {
             "cuts": [
                 {
                     "order": 1,
+                    "segment_index": 2,
                     "tc_in": "00:00:10:00",
                     "tc_out": "00:00:15:00",
                     "speaker": "Speaker 2",
+                    "confidence": 0.91,
                     "purpose": "HOOK",
                     "dialogue_summary": "Introduces the product promise.",
                 },
                 {
                     "order": 2,
+                    "segment_index": 3,
                     "tc_in": "00:00:15:00",
                     "tc_out": "00:00:20:00",
                     "speaker": "Speaker 1",
+                    "confidence": 0.93,
                     "purpose": "PIVOT",
                     "dialogue_summary": "Explains the narrative structure of the edit.",
                 },
                 {
                     "order": 3,
+                    "segment_index": 4,
                     "tc_in": "00:00:20:00",
                     "tc_out": "00:00:25:00",
                     "speaker": "Speaker 2",
+                    "confidence": 0.95,
                     "purpose": "CLOSE",
                     "dialogue_summary": "Closes with a real-project test invitation.",
                 },
@@ -279,6 +292,30 @@ class BiteBuilderPipelineTests(unittest.TestCase):
 
             debug_response = json.loads((output_dir / "_llm_response.json").read_text())
             self.assertEqual(len(debug_response["options"]), 2)
+
+    def test_generate_selection_no_candidates_returns_noop_response(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir) / "output"
+            transcript_text = TRANSCRIPT_FIXTURE.read_text(encoding="utf-8")
+            xml_text = XML_FIXTURE.read_text(encoding="utf-8")
+
+            with patch("bitebuilder.build_candidate_shortlist", return_value=[]), \
+                 patch("bitebuilder.ensure_ollama_ready", return_value=("http://127.0.0.1:11435", ["qwen3:8b"])), \
+                 redirect_stdout(io.StringIO()), \
+                 redirect_stderr(io.StringIO()):
+                result = bitebuilder.run_pipeline(
+                    transcript_text=transcript_text,
+                    xml_text=xml_text,
+                    brief="45 second proof of concept",
+                    options=2,
+                    output_dir=str(output_dir),
+                    host="http://127.0.0.1:11435",
+                )
+
+            self.assertEqual(result["response"]["selection_status"], "no_candidates")
+            self.assertEqual(result["response"]["options"], [])
+            self.assertIn("no_candidate_reason", result["response"])
+            self.assertEqual(result["output_files"], [])
 
     def test_run_pipeline_missing_transcript_file(self):
         with self.assertRaises(BiteBuilderError) as exc:

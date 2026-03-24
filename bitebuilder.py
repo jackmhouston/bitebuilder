@@ -565,10 +565,18 @@ def format_candidate_pool(candidates: list[dict]) -> str:
 def collect_candidate_validation_errors(
     response: dict,
     valid_candidate_indexes: set[int],
-    expected_options: int,
+    valid_candidate_timecodes: set[tuple[str, str]] | None = None,
+    expected_options: int | None = None,
 ) -> list[str]:
     """Validate that the model picked real candidate indexes."""
     errors = []
+
+    if response.get("selection_status") == "no_candidates":
+        if response.get("options"):
+            errors.append("Response selection_status 'no_candidates' must have an empty options list")
+        if not response.get("no_candidate_reason"):
+            errors.append("no_candidate_reason is required when selection_status is 'no_candidates'")
+        return errors
 
     if "options" not in response:
         return ["Missing 'options' key in response"]
@@ -586,12 +594,31 @@ def collect_candidate_validation_errors(
 
         if cuts:
             for cut_index, cut in enumerate(cuts, start=1):
-                if "tc_in" in cut and "tc_out" in cut:
-                    continue
                 segment_index = normalize_segment_index(cut.get("segment_index"))
                 if segment_index not in valid_candidate_indexes:
                     errors.append(
                         f"Option {opt_index}, Cut {cut_index}: segment_index '{segment_index}' is not in the candidate pool"
+                    )
+                if "tc_in" not in cut or "tc_out" not in cut:
+                    errors.append(
+                        f"Option {opt_index}, Cut {cut_index}: missing tc_in/tc_out for exact timecode alignment"
+                    )
+                    continue
+                if valid_candidate_timecodes is not None:
+                    tc_pair = (cut["tc_in"], cut["tc_out"])
+                    if tc_pair not in valid_candidate_timecodes:
+                        errors.append(
+                            f"Option {opt_index}, Cut {cut_index}: tc_in/tc_out pair is not in candidate shortlist"
+                        )
+                confidence = cut.get("confidence")
+                if not isinstance(confidence, (int, float)):
+                    errors.append(
+                        f"Option {opt_index}, Cut {cut_index}: confidence is required and must be a number"
+                    )
+                    continue
+                if float(confidence) < 0.0 or float(confidence) > 1.0:
+                    errors.append(
+                        f"Option {opt_index}, Cut {cut_index}: confidence '{confidence}' must be between 0 and 1"
                     )
         else:
             for item in alt_indexes:
@@ -627,6 +654,17 @@ def normalize_segment_indexes(values) -> list[int]:
     return normalized
 
 
+def _preserve_selection_status(base_response: dict, options: list[dict]) -> dict:
+    """Preserve top-level selection contract keys when transforming options."""
+    preserved = {"options": options}
+    selection_status = base_response.get("selection_status", "ok")
+    if selection_status is not None:
+        preserved["selection_status"] = selection_status
+    if selection_status == "no_candidates":
+        preserved["no_candidate_reason"] = base_response.get("no_candidate_reason", "")
+    return preserved
+
+
 def hydrate_model_response(response: dict, candidates: list[dict], segments, source) -> dict:
     """Map model-selected candidate indexes back to exact timecodes and speakers."""
     candidate_map = {item["segment_index"]: item for item in candidates}
@@ -647,9 +685,11 @@ def hydrate_model_response(response: dict, candidates: list[dict], segments, sou
             if "tc_in" in cut and "tc_out" in cut:
                 hydrated_cuts.append({
                     "order": cut.get("order", cut_index),
+                    "segment_index": normalize_segment_index(cut.get("segment_index")),
                     "tc_in": cut["tc_in"],
                     "tc_out": cut["tc_out"],
                     "speaker": cut.get("speaker", ""),
+                    "confidence": cut.get("confidence", 0.0),
                     "purpose": cut.get("purpose", "CUT"),
                     "dialogue_summary": cut.get("dialogue_summary", ""),
                 })
@@ -662,8 +702,10 @@ def hydrate_model_response(response: dict, candidates: list[dict], segments, sou
             segment = segments[segment_index]
             hydrated_cuts.append({
                 "order": cut.get("order", cut_index),
+                "segment_index": segment_index,
                 "tc_in": candidate["tc_in"],
                 "tc_out": candidate["tc_out"],
+                "confidence": cut.get("confidence", 0.0),
                 "speaker": candidate["speaker"],
                 "purpose": cut.get("purpose") or candidate["roles"][0],
                 "dialogue_summary": cut.get("dialogue_summary") or segment.text[:160],
@@ -689,7 +731,11 @@ def hydrate_model_response(response: dict, candidates: list[dict], segments, sou
             "cuts": hydrated_cuts,
         })
 
-    return {"options": hydrated_options}
+    return {
+        "selection_status": response.get("selection_status", "ok"),
+        "no_candidate_reason": response.get("no_candidate_reason"),
+        "options": hydrated_options,
+    }
 
 
 def candidate_matches_purpose(candidate: dict, purpose: str) -> bool:
@@ -864,6 +910,8 @@ def optimize_option_duration(
     optimized_cuts = []
     for order, cut in enumerate(working, start=1):
         optimized_cuts.append({
+            "segment_index": cut.get("candidate", {}).get("segment_index") if isinstance(cut.get("candidate"), dict) else cut.get("segment_index"),
+            "confidence": cut.get("confidence", 0.95),
             "order": order,
             "tc_in": cut["tc_in"],
             "tc_out": cut["tc_out"],
@@ -903,7 +951,7 @@ def optimize_response_durations(
         for note in option_notes:
             notes.append(f"Option {option_index}: {note}")
 
-    return {"options": optimized_options}, notes
+    return _preserve_selection_status(response, optimized_options), notes
 
 
 def enforce_requested_speaker_mix(
@@ -979,6 +1027,8 @@ def enforce_requested_speaker_mix(
         for cut_idx, cut in enumerate(option["cuts"]):
             if cut_idx == best_move["cut_idx"]:
                 new_cuts.append({
+                    "segment_index": replacement["segment_index"],
+                    "confidence": cut.get("confidence", 0.95),
                     "order": cut.get("order", cut_idx + 1),
                     "tc_in": replacement["tc_in"],
                     "tc_out": replacement["tc_out"],
@@ -987,7 +1037,10 @@ def enforce_requested_speaker_mix(
                     "dialogue_summary": replacement["text"][:160],
                 })
             else:
-                new_cuts.append(cut)
+                preserved = dict(cut)
+                preserved.setdefault("segment_index", None)
+                preserved.setdefault("confidence", 0.95)
+                new_cuts.append(preserved)
 
         updated_options.append({
             **option,
@@ -998,7 +1051,7 @@ def enforce_requested_speaker_mix(
             f"Option {option_index}: replaced one cut with {replacement['speaker']} at {replacement['tc_in']} to preserve multi-speaker coverage."
         )
 
-    return {"options": updated_options}, notes
+    return _preserve_selection_status(response, updated_options), notes
 
 
 def enforce_selection_constraints(
@@ -1046,6 +1099,8 @@ def enforce_selection_constraints(
                         notes.append(f"Option {option_index}: moved forced opening bite {opening_candidate['tc_in']} to the front.")
                 else:
                     cuts.insert(0, {
+                        "segment_index": forced_open_segment_index,
+                        "confidence": 0.95,
                         "order": 1,
                         "tc_in": opening_candidate["tc_in"],
                         "tc_out": opening_candidate["tc_out"],
@@ -1063,6 +1118,8 @@ def enforce_selection_constraints(
             replacement = candidate_map[segment_index]
             insert_at = max(1, len(cuts) - 1) if cuts else 0
             cuts.insert(insert_at, {
+                "segment_index": segment_index,
+                "confidence": 0.95,
                 "order": insert_at + 1,
                 "tc_in": replacement["tc_in"],
                 "tc_out": replacement["tc_out"],
@@ -1104,7 +1161,7 @@ def enforce_selection_constraints(
             "cuts": cuts,
         })
 
-    return {"options": updated_options}, notes
+    return _preserve_selection_status(response, updated_options), notes
 
 
 def build_fallback_response(
@@ -1165,6 +1222,8 @@ def build_fallback_response(
         hydrated_cuts = []
         for cut_number, candidate in enumerate(selected, start=1):
             hydrated_cuts.append({
+                "segment_index": candidate["segment_index"],
+                "confidence": 0.95,
                 "order": cut_number,
                 "tc_in": candidate["tc_in"],
                 "tc_out": candidate["tc_out"],
@@ -1190,7 +1249,23 @@ def build_fallback_response(
             1,
         )
 
-    return {"options": options}
+    if not options:
+        return _build_no_candidate_noop_response(
+            "No options could be assembled from candidate segments."
+        )
+
+    return {
+        "selection_status": "ok",
+        "options": options,
+    }
+
+
+def _build_no_candidate_noop_response(reason: str) -> dict:
+    return {
+        "selection_status": "no_candidates",
+        "options": [],
+        "no_candidate_reason": reason,
+    }
 
 
 def ensure_ollama_ready(model: str, host: str = DEFAULT_HOST) -> tuple[str, list[str]]:
@@ -1370,6 +1445,31 @@ def generate_edit_options(
     )
     formatted_transcript = format_candidate_pool(candidate_shortlist)
     valid_candidate_indexes = {item["segment_index"] for item in candidate_shortlist}
+    valid_candidate_timecodes = {
+        (item["tc_in"], item["tc_out"]) for item in candidate_shortlist
+    }
+    user_prompt = ""
+
+    if not candidate_shortlist:
+        reason = "No candidate segments passed strictness constraints for this request."
+        return (
+            _build_no_candidate_noop_response(reason),
+            [reason],
+            False,
+            valid_tcs,
+            target_duration_range,
+            {
+                "editorial_direction_prompt": editorial_direction_prompt,
+                "editorial_direction": editorial_direction,
+                "editorial_direction_raw": editorial_direction_debug.get("raw_text", ""),
+                "accepted_plan": accepted_plan,
+                "accepted_plan_text": accepted_plan_text,
+                "candidate_shortlist": candidate_shortlist,
+                "generation_prompt": user_prompt,
+                "attempts": [],
+                "used_fallback": True,
+            },
+        )
 
     user_prompt = build_user_prompt(
         formatted_transcript,
@@ -1409,6 +1509,7 @@ def generate_edit_options(
             candidate_errors = collect_candidate_validation_errors(
                 response=raw_response,
                 valid_candidate_indexes=valid_candidate_indexes,
+                valid_candidate_timecodes=valid_candidate_timecodes,
                 expected_options=num_options,
             )
             response = hydrate_model_response(raw_response, candidate_shortlist, segments, source)
@@ -1441,6 +1542,7 @@ def generate_edit_options(
             structural_errors = validate_llm_response(
                 response=response,
                 valid_timecodes=valid_tcs,
+                valid_candidate_timecodes=valid_candidate_timecodes,
                 expected_options=num_options,
             )
             duration_warnings = collect_duration_warnings(
@@ -1573,6 +1675,9 @@ def write_output_files(response: dict, source, output_dir: str, debug_artifacts:
     with open(debug_path, "w", encoding="utf-8") as handle:
         json.dump(response, handle, indent=2)
     debug_files = write_debug_artifacts(output_dir, debug_artifacts)
+
+    if response.get("selection_status") == "no_candidates":
+        return [], debug_path, debug_files
 
     for index, option in enumerate(response.get("options", [])):
         opt_name = option.get("name", f"Option {index + 1}")

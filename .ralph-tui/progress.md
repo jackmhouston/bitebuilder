@@ -19,6 +19,39 @@ after each iteration and it's included in prompts for context.
 - For partial recovery, include a `partial` object with current progress state and stage.
 - For transcript validation, parse once with explicit `strict` mode and normalize failures into a list of `{line, field, message, context}` objects, then map directly to structured payloads before selection starts.
 
+### Deterministic LLM selection pattern
+- Keep the same schema contract in prompt text and validator code, including explicit status values and fallback structure.
+- Enforce candidate-boundary constraints using exact `tc_in`/`tc_out` pairs from shortlisted segments.
+- Add explicit confidence score requirements on every cut and reject out-of-range values.
+
+
+## 2026-03-24 - US-003
+- Added stricter LLM guardrails for schema compliance, candidate-aligned outputs, and deterministic behavior.
+- Updated selection prompts and validators to require:
+  - `selection_status` (`ok` or `no_candidates`).
+  - `segment_index`, exact `tc_in`/`tc_out`, `purpose`, and `confidence` per cut.
+  - `no_candidate_reason` when `selection_status` is `no_candidates`.
+- Added explicit valid and invalid JSON examples to the prompt, plus no-op output guidance for empty candidate sets.
+- Enforced optional validation of selected cuts against the shortlist timecode pairs (`tc_in` + `tc_out`) in both `collect_candidate_validation_errors` and `validate_llm_response`.
+- Added deterministic seed/temperature documentation and existing env-driven settings.
+- Added explicit no-candidate fallback handling before model generation when shortlist is empty and ensured `_llm_response.json` is still written without sequence output generation.
+- Files changed:
+  - [llm/prompts.py](/home/dietrich001/bitebuilder/llm/prompts.py)
+  - [bitebuilder.py](/home/dietrich001/bitebuilder/bitebuilder.py)
+  - [tests/test_pipeline.py](/home/dietrich001/bitebuilder/tests/test_pipeline.py)
+  - [README.md](/home/dietrich001/bitebuilder/README.md)
+  - [.ralph-tui/progress.md](/home/dietrich001/bitebuilder/.ralph-tui/progress.md)
+- **Learnings:**
+  - Patterns discovered:
+    - Early shortlist exhaustion should short-circuit into a typed no-candidate response before any LLM call.
+    - Avoid nullable fields in variant response contracts to prevent parser ambiguity.
+    - Preserve `selection_status` / `no_candidate_reason` when mutating options in post-processing.
+  - Gotchas encountered:
+    - `no_candidate_reason` should only appear in `no_candidates` responses; emitting it as `null` for `ok` caused test and caller ambiguity.
+    - Determinism is stronger when generation settings are configured in code and documented in README for operator overrides.
+    - Post-processing passes must preserve top-level schema contract, not just `options`.
+---
+
 
 ## 2026-03-23 - US-002
 - Added strict transcript timecode validation before LLM selection and XML generation, including schema checks, zero/negative ranges, overlap detection, duplicate range checks, and optional frame-bound checks when source timebase is known.
