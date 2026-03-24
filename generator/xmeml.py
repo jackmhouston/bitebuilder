@@ -9,8 +9,34 @@ actual Premiere XML exports.
 """
 
 import uuid as _uuid
+import json
 from .timecode import tc_to_frames, frames_to_ticks
 from parser.premiere_xml import SourceMetadata
+
+
+def build_deterministic_sequence_id(
+    name: str,
+    cuts: list[dict],
+    source: SourceMetadata,
+    run_metadata: dict | None = None,
+) -> str:
+    """Build a deterministic sequence UUID for stable replayability."""
+    payload = {
+        "name": name,
+        "cuts": [{"tc_in": cut["tc_in"], "tc_out": cut["tc_out"]} for cut in cuts],
+        "source": {
+            "name": source.source_name,
+            "timebase": source.timebase,
+            "ntsc": source.ntsc,
+            "duration": source.duration,
+        },
+    }
+    if run_metadata:
+        payload["run_metadata"] = {
+            "model_id": (run_metadata.get("model") or {}).get("resolved_id"),
+            "schema_version": run_metadata.get("schema_version"),
+        }
+    return str(_uuid.uuid5(_uuid.NAMESPACE_DNS, json.dumps(payload, sort_keys=True, separators=(",", ":"))))
 
 
 def generate_sequence(
@@ -18,6 +44,7 @@ def generate_sequence(
     cuts: list[dict],
     source: SourceMetadata,
     seq_uuid: str = None,
+    run_metadata: dict | None = None,
 ) -> str:
     """
     Generate a complete XMEML v4 sequence XML string.
@@ -36,7 +63,7 @@ def generate_sequence(
         raise ValueError("cuts list cannot be empty")
 
     if seq_uuid is None:
-        seq_uuid = str(_uuid.uuid4())
+        seq_uuid = build_deterministic_sequence_id(name, cuts, source, run_metadata=run_metadata)
 
     num_cuts = len(cuts)
     tb = source.timebase
@@ -99,6 +126,7 @@ def generate_sequence(
 
     # Assemble full XML
     edit_line_ticks = frames_to_ticks(total_duration, tb, source.ntsc)
+    metadata_block = _build_metadata_block(run_metadata) if run_metadata else ""
 
     return f'''<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE xmeml>
@@ -180,12 +208,38 @@ def generate_sequence(
 {chr(10).join(audio_r_clips)}
 \t\t\t\t</track>
 \t\t\t</audio>
+\t\t\t{metadata_block}
 \t\t</media>
 \t</sequence>
 </xmeml>'''
 
 
 # ─── Internal helpers ───────────────────────────────────────────────
+
+
+def _build_metadata_block(run_metadata: dict | None) -> str:
+    """Build a deterministic, compact metadata block for traceability."""
+    if not run_metadata:
+        return ""
+
+    trace_payload = {
+        "schema_version": run_metadata.get("schema_version"),
+        "model_id": (run_metadata.get("model") or {}).get("resolved_id"),
+        "input_hashes": {
+            "transcript_sha256": (run_metadata.get("input_descriptors", {}).get("transcript") or {}).get("sha256"),
+            "premiere_xml_sha256": (run_metadata.get("input_descriptors", {}).get("premiere_xml") or {}).get("sha256"),
+            "source_path": ((run_metadata.get("input_descriptors", {}).get("source", {}).get("hashes") or {}).get("source_path")),
+            "pathurl": ((run_metadata.get("input_descriptors", {}).get("source", {}).get("hashes") or {}).get("pathurl")),
+        },
+        "parser_versions": run_metadata.get("parser_versions", {}),
+        "selection_validator_version": run_metadata.get("selection_validator_version"),
+        "source": run_metadata.get("source"),
+    }
+
+    serialized = json.dumps(trace_payload, sort_keys=True, separators=(",", ":"))
+    return (
+        f"\t\t\t\t<metadata>\n\t\t\t\t\t<bitebuilder>{_xml_escape(serialized)}</bitebuilder>\n\t\t\t\t</metadata>"
+    )
 
 
 def _xml_escape(text: str) -> str:

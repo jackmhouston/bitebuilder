@@ -241,6 +241,16 @@ class WebAppTests(unittest.TestCase):
                 "actual_duration_seconds": 5.0,
                 "estimated_duration_seconds": 5.0,
             }],
+            "run_metadata": {
+                "schema_version": "run-metadata/1",
+                "timestamp": "2026-03-23T00:00:00Z",
+                "input_descriptors": {
+                    "transcript": {"sha256": "abc"},
+                    "premiere_xml": {"sha256": "def"},
+                },
+                "parser_versions": {"transcript_parser": "transcript-parser/1"},
+                "model": {"resolved_id": "qwen3:8b"},
+            },
         }
 
         response = self.client.post("/api/generate", json={
@@ -264,6 +274,8 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(payload["files"][0]["filename"], "Margin_Story.xml")
         self.assertEqual(payload["files"][0]["selected_cuts"][0]["segment_index"], 0)
         self.assertEqual(len(payload["options_detail"][0]["selected_cuts"]), 1)
+        self.assertEqual(payload["run_metadata"]["model"]["resolved_id"], "qwen3:8b")
+        self.assertEqual(payload["run_metadata"]["input_descriptors"]["transcript"]["sha256"], "abc")
 
     @patch("webapp.run_pipeline", side_effect=BiteBuilderError({
         **build_validation_error(
@@ -363,6 +375,20 @@ class WebAppTests(unittest.TestCase):
                     "estimated_duration_seconds": 15.0,
                 }
             ],
+            "run_metadata": {
+                "schema_version": "run-metadata/1",
+                "timestamp": "2026-03-23T00:00:00Z",
+                "input_descriptors": {
+                    "transcript": {"sha256": "abc"},
+                    "premiere_xml": {"sha256": "def"},
+                },
+                "parser_versions": {
+                    "transcript_parser": "transcript-parser/1",
+                    "transcript_validator": "transcript-validator/1",
+                    "premiere_parser": "premiere-xml-parser/1",
+                },
+                "model": {"resolved_id": "qwen3.5:9b"},
+            },
         }
 
         response = self.client.post("/api/generate", json={
@@ -389,6 +415,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(payload["segment_count"], 5)
         self.assertEqual(payload["files"][0]["filename"], "Margin_Story.xml")
         self.assertEqual(payload["thinking_mode"], "on")
+        self.assertEqual(payload["run_metadata"]["model"]["resolved_id"], "qwen3.5:9b")
         self.assertIn("/api/output/", payload["files"][0]["download_url"])
         self.assertEqual(
             mock_run_pipeline.call_args.kwargs["editorial_messages"],

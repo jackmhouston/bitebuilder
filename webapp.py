@@ -413,6 +413,7 @@ def serialize_generation_result(run_id: str, run_dir: Path, result: dict) -> dic
         "run_id": run_id,
         "saved_dir": str(run_dir),
         "segment_count": result["segment_count"],
+        "run_metadata": result.get("run_metadata"),
         "source": result["source"].to_dict(),
         "thinking_mode": result["thinking_mode"],
         "target_duration_range": result["target_duration_range"],

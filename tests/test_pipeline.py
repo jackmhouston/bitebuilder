@@ -1,4 +1,5 @@
 import io
+import hashlib
 import json
 import tempfile
 import unittest
@@ -213,7 +214,22 @@ class BiteBuilderPipelineTests(unittest.TestCase):
             {"tc_in": cut["tc_in"], "tc_out": cut["tc_out"]}
             for cut in MOCK_RESPONSE["options"][0]["cuts"]
         ]
-        xml_str = generate_sequence("Margin Story", cuts, source)
+        run_metadata = {
+            "schema_version": "run-metadata/1",
+            "model": {"resolved_id": "qwen3:8b"},
+            "input_descriptors": {
+                "transcript": {"sha256": "transcript-hash"},
+                "premiere_xml": {"sha256": "premiere-hash"},
+                "source": {"hashes": {"source_path": "path-hash", "pathurl": "pathurl-hash"}},
+            },
+            "parser_versions": {
+                "transcript_parser": "transcript-parser/1",
+                "transcript_validator": "transcript-validator/1",
+                "premiere_parser": "premiere-xml-parser/1",
+            },
+            "selection_validator_version": "selection-validator/1",
+        }
+        xml_str = generate_sequence("Margin Story", cuts, source, run_metadata=run_metadata)
         tree = ET.fromstring(xml_str)
 
         video_clips = tree.findall(".//video/track/clipitem")
@@ -221,12 +237,33 @@ class BiteBuilderPipelineTests(unittest.TestCase):
         self.assertEqual(len(video_clips), 3)
         self.assertEqual(len(audio_tracks), 2)
         self.assertEqual(tree.find(".//file/pathurl").text, source.pathurl)
+        metadata_payload = json.loads(tree.findtext(".//metadata/bitebuilder"))
+        self.assertEqual(metadata_payload["model_id"], "qwen3:8b")
+        self.assertEqual(metadata_payload["input_hashes"]["transcript_sha256"], "transcript-hash")
+        self.assertEqual(metadata_payload["parser_versions"]["premiere_parser"], "premiere-xml-parser/1")
 
         total_duration = sum(
             estimate_duration_seconds(cut["tc_in"], cut["tc_out"], source.timebase, source.ntsc)
             for cut in cuts
         )
         self.assertGreater(total_duration, 0)
+
+    def test_candidate_shortlist_is_deterministic_for_ties(self):
+        source = type("Source", (), {"timebase": 24, "ntsc": False})()
+        segments = [
+            type("Segment", (), {
+                "tc_in": f"00:00:0{i}:00",
+                "tc_out": f"00:00:0{i}:05",
+                "speaker": "Speaker 1",
+                "text": "Deterministic candidate.",
+            })()
+            for i in range(3)
+        ]
+
+        with patch("bitebuilder.score_segment", return_value=(5.0, ["consistent"], ["HOOK"])):
+            shortlist = bitebuilder.build_candidate_shortlist(segments, source, brief="short", limit=10)
+
+        self.assertEqual([item["segment_index"] for item in shortlist], [0, 1, 2])
 
     def test_timecode_roundtrip_preserved_for_fixture_segments(self):
         segments = parse_transcript_file(str(TRANSCRIPT_FIXTURE))
@@ -358,19 +395,57 @@ class BiteBuilderPipelineTests(unittest.TestCase):
             result = json.loads((output_dir / "_llm_response.json").read_text(encoding="utf-8"))
             self.assertEqual(result["selection_status"], "ok")
             self.assertEqual(len(result.get("options", [])), 2)
-
             option = result["options"][0]
             self.assertIn("name", option)
             self.assertIn("description", option)
             self.assertIn("estimated_duration_seconds", option)
             self.assertIn("cuts", option)
             self.assertEqual(len(option["cuts"]), 3)
+            run_metadata = json.loads((output_dir / "_run_metadata.json").read_text(encoding="utf-8"))
+            self.assertIn("schema_version", run_metadata)
+            self.assertIn("input_descriptors", run_metadata)
+            self.assertIn("parser_versions", run_metadata)
+            self.assertEqual(run_metadata["model"]["resolved_id"], "qwen3:8b")
 
             first_cut = option["cuts"][0]
             self.assertEqual(first_cut["segment_index"], 0)
             self.assertEqual(first_cut["tc_in"], "00:00:00:00")
             self.assertEqual(first_cut["tc_out"], "00:00:05:00")
             self.assertEqual(first_cut["speaker"], "Speaker 1")
+
+    def test_cli_output_is_deterministic_for_same_fixture_mock_output(self):
+        def run_once(output_dir: Path):
+            argv = [
+                "bitebuilder.py",
+                "--transcript",
+                str(TRANSCRIPT_FIXTURE),
+                "--xml",
+                str(XML_FIXTURE),
+                "--brief",
+                "45 second proof of concept",
+                "--options",
+                "2",
+                "--output",
+                str(output_dir),
+            ]
+            with patch("bitebuilder.resolve_host", return_value=("http://127.0.0.1:11435", ["qwen3:8b"])), \
+                 patch("bitebuilder.ollama_generate", return_value=MOCK_RESPONSE), \
+                 patch("sys.argv", argv), \
+                 redirect_stdout(io.StringIO()), \
+                 redirect_stderr(io.StringIO()):
+                bitebuilder.main()
+
+            entries = sorted(output_dir.glob("*.xml"), key=lambda p: p.name)
+            hashes = [
+                (path.name, hashlib.sha256(path.read_bytes()).hexdigest())
+                for path in entries
+            ]
+            return hashes
+
+        with tempfile.TemporaryDirectory() as temp_one, tempfile.TemporaryDirectory() as temp_two:
+            hashes_one = run_once(Path(temp_one) / "output")
+            hashes_two = run_once(Path(temp_two) / "output")
+            self.assertEqual(hashes_one, hashes_two)
 
     def test_cli_rejects_fixtureed_malformed_transcript_with_structured_code(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -41,6 +41,39 @@ after each iteration and it's included in prompts for context.
 - Use explicit recovery actions (`fix`, `retry`, `resume`) that mutate only one state transition at a time, preserving all entered values unless they are intentionally corrected.
 
 
+### Deterministic artifact pattern
+- Keep content identity deterministic end-to-end by threading the same ordered identity inputs through:
+  - candidate ranking/sorting,
+  - sequence UUID generation,
+  - output naming,
+  - and metadata stamping.
+- Prefer `json.dumps(..., sort_keys=True, separators=(..., :))` for stable signature and deterministic IDs.
+
+
+## 2026-03-23 - US-007
+- Enforced deterministic candidate shortlist ordering for tie cases and deterministic fallback ordering.
+- Added deterministic run metadata to pipeline output with timestamp, input hashes, parser/validator versions, and model id.
+- Added metadata block injection into generated XMEML sequence XML and deterministic sequence IDs driven by content + metadata.
+- Exposed run metadata through CLI and web API payloads.
+- Added reproducibility coverage:
+  - deterministic candidate ordering test,
+  - metadata presence test in generated XML,
+  - identical filename/content test across repeated identical runs.
+- Files changed:
+  - [bitebuilder.py](/home/dietrich001/bitebuilder/bitebuilder.py)
+  - [generator/xmeml.py](/home/dietrich001/bitebuilder/generator/xmeml.py)
+  - [tests/test_pipeline.py](/home/dietrich001/bitebuilder/tests/test_pipeline.py)
+  - [tests/test_webapp.py](/home/dietrich001/bitebuilder/tests/test_webapp.py)
+  - [.ralph-tui/progress.md](/home/dietrich001/bitebuilder/.ralph-tui/progress.md)
+- **Learnings:**
+  - Patterns discovered:
+    - Stable IDs are reliable when generated once from ordered payloads and reused, instead of recomputing from ad-hoc string concatenations.
+    - Reproducibility checks are easiest to validate by asserting sorted filename + hash tuples, not just file existence.
+  - Gotchas encountered:
+    - Candidate ranking must include explicit tie-break fields (`segment_index`) for equal-score and equal-duration ties.
+    - Source or model metadata included in UUID payloads must be stable/ordered to avoid accidental nondeterminism.
+---
+
 ## 2026-03-24 - US-005
 - Implemented UI workflow status and recoverability enhancements in the Flask experience so users can see clear step progression and recover from failures without re-uploading data.
 - Renamed and aligned workflow steps to: Upload, Validate, Preview/Confirm, Generate, Download.

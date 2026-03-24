@@ -16,6 +16,7 @@ Usage:
 import argparse
 import logging
 import json
+import hashlib
 import os
 import re
 import sys
@@ -24,7 +25,7 @@ import xml.etree.ElementTree as ET
 from parser.transcript import parse_transcript, get_valid_timecodes
 from parser.transcript import TranscriptValidationError
 from parser.premiere_xml import parse_premiere_xml_string
-from generator.xmeml import generate_sequence
+from generator.xmeml import generate_sequence, build_deterministic_sequence_id
 from generator.timecode import estimate_duration_seconds
 from llm.prompts import (
     SYSTEM_PROMPT,
@@ -44,6 +45,35 @@ from llm.ollama_client import (
     generate_text,
     normalize_thinking_mode,
 )
+
+
+BITEBUILDER_VERSION = "0.1.0"
+PIPELINE_SCHEMA_VERSION = "run-metadata/1"
+RUN_METADATA_SOURCE_HASH_VERSION = "source-hash/1"
+TRANSCRIPT_PARSER_VERSION = "transcript-parser/1"
+TRANSCRIPT_VALIDATOR_VERSION = "transcript-validator/1"
+PREMIERE_PARSER_VERSION = "premiere-xml-parser/1"
+SELECTION_VALIDATOR_VERSION = "selection-validator/1"
+
+
+def _iso_timestamp() -> str:
+    return __import__("datetime").datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+
+def _hash_payload(payload: str | bytes) -> str:
+    raw = payload if isinstance(payload, bytes) else (payload or "").encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def build_input_descriptor(raw_text: str, label: str) -> dict:
+    """Build a deterministic input descriptor for reproducibility and traceability."""
+    encoded = (raw_text or "").encode("utf-8")
+    return {
+        "label": label,
+        "sha256": _hash_payload(encoded),
+        "byte_count": len(encoded),
+        "line_count": (raw_text.count("\n") + 1) if raw_text else 0,
+    }
 
 
 def build_validation_error(
@@ -511,8 +541,7 @@ def build_candidate_shortlist(
 
     ranked = sorted(
         candidates,
-        key=lambda item: (item["score"], -min(item["duration_seconds"], 18)),
-        reverse=True,
+        key=lambda item: (-item["score"], -min(item["duration_seconds"], 18), item["segment_index"]),
     )
 
     shortlist = []
@@ -1173,7 +1202,7 @@ def build_fallback_response(
 ) -> dict:
     """Build a deterministic response when the model output is unusable."""
     target_seconds = (sum(target_duration_range) / 2) if target_duration_range else 50
-    ranked = sorted(candidates, key=lambda item: item["score"], reverse=True)
+    ranked = sorted(candidates, key=lambda item: (-item["score"], item["segment_index"]))
 
     def find_first(required_roles: tuple[str, ...], used: set[int], speaker: str | None = None):
         for candidate in ranked:
@@ -1620,6 +1649,7 @@ def generate_edit_options(
         },
         "selection_warnings": warnings,
         "used_fallback": used_fallback,
+        "run_metadata": {},
     }
 
     return response, validation_errors, used_retry, valid_tcs, target_duration_range, debug_artifacts
@@ -1678,6 +1708,11 @@ def write_debug_artifacts(output_dir: str, debug_artifacts: dict | None) -> dict
     with open(log_path, "w", encoding="utf-8") as handle:
         json.dump(debug_artifacts, handle, indent=2)
     paths["generation_log"] = log_path
+    if debug_artifacts.get("run_metadata"):
+        metadata_path = os.path.join(output_dir, "_run_metadata.json")
+        with open(metadata_path, "w", encoding="utf-8") as handle:
+            json.dump(debug_artifacts["run_metadata"], handle, indent=2, sort_keys=True)
+        paths["run_metadata"] = metadata_path
     return paths
 
 
@@ -1693,6 +1728,7 @@ def write_output_files(response: dict, source, output_dir: str, debug_artifacts:
     if response.get("selection_status") == "no_candidates":
         return [], debug_path, debug_files
 
+    run_metadata = (debug_artifacts or {}).get("run_metadata")
     for index, option in enumerate(response.get("options", [])):
         opt_name = option.get("name", f"Option {index + 1}")
         opt_cuts = option.get("cuts", [])
@@ -1702,7 +1738,18 @@ def write_output_files(response: dict, source, output_dir: str, debug_artifacts:
             continue
 
         gen_cuts = [{"tc_in": cut["tc_in"], "tc_out": cut["tc_out"]} for cut in opt_cuts]
-        xml_str = generate_sequence(name=opt_name, cuts=gen_cuts, source=source)
+        xml_str = generate_sequence(
+            name=opt_name,
+            cuts=gen_cuts,
+            source=source,
+            seq_uuid=build_deterministic_sequence_id(
+                name=opt_name,
+                cuts=gen_cuts,
+                source=source,
+                run_metadata=run_metadata,
+            ),
+            run_metadata=run_metadata,
+        )
         ET.fromstring(xml_str)
 
         actual_dur = 0.0
@@ -1800,6 +1847,40 @@ def run_pipeline(
     progress["xml_parsed"] = True
     progress["source"] = source.to_dict()
 
+    run_metadata = {
+        "schema_version": PIPELINE_SCHEMA_VERSION,
+        "bitebuilder_version": BITEBUILDER_VERSION,
+        "timestamp": _iso_timestamp(),
+        "source": {
+            "name": source.source_name,
+            "pathurl": source.pathurl,
+            "path": source.source_path,
+        },
+        "input_descriptors": {
+            "transcript": build_input_descriptor(transcript_text, "transcript"),
+            "premiere_xml": build_input_descriptor(xml_text, "premiere_xml"),
+            "source": {
+                "name": source.source_name,
+                "path": source.source_path,
+                "pathurl": source.pathurl,
+                "hashes": {
+                    "source_path": _hash_payload(source.source_path),
+                    "pathurl": _hash_payload(source.pathurl),
+                    "source_payload": _hash_payload(
+                        f"{source.source_name}|{source.source_path}|{source.duration}|{source.timebase}|{source.ntsc}"
+                    ),
+                },
+                "hash_version": RUN_METADATA_SOURCE_HASH_VERSION,
+            },
+        },
+        "parser_versions": {
+            "transcript_parser": TRANSCRIPT_PARSER_VERSION,
+            "transcript_validator": TRANSCRIPT_VALIDATOR_VERSION,
+            "premiere_parser": PREMIERE_PARSER_VERSION,
+        },
+        "selection_validator_version": SELECTION_VALIDATOR_VERSION,
+    }
+
     # Additional validation pass with source frame rate to enforce frame-range policies.
     try:
         parse_transcript(
@@ -1826,6 +1907,16 @@ def run_pipeline(
             details={"cause": str(exc)},
         ))
 
+    run_metadata["model"] = {
+        "requested_id": model,
+        "resolved_id": model,
+        "host": resolved_host,
+        "thinking_mode": normalize_thinking_mode(thinking_mode),
+    }
+    run_metadata["source"]["name"] = source.source_name
+    run_metadata["source"]["pathurl"] = source.pathurl
+    run_metadata["source"]["path"] = source.source_path
+
     try:
         progress["selection_started"] = True
         response, validation_errors, used_retry, valid_tcs, target_duration_range, debug_artifacts = generate_edit_options(
@@ -1848,6 +1939,7 @@ def run_pipeline(
             thinking_mode=thinking_mode,
             progress_callback=progress_callback,
         )
+        debug_artifacts["run_metadata"] = run_metadata
         if response.get("selection_status") == "ok" and validation_errors:
             selection_error_kind = "model_output_validation"
             if debug_artifacts.get("selection_retry", {}).get("parse_or_validation_error"):
@@ -1889,6 +1981,7 @@ def run_pipeline(
             "segment_count": len(segments),
             "source": source.to_dict(),
             "brief": validated_brief,
+            "run_metadata": run_metadata,
         }
         raise BiteBuilderError({**error, "partial": partial})
 
@@ -1920,6 +2013,7 @@ def run_pipeline(
             "segment_count": len(segments),
             "source": source.to_dict(),
             "brief": validated_brief,
+            "run_metadata": run_metadata,
         }
         raise BiteBuilderError({**error, "partial": partial})
 
@@ -1931,6 +2025,7 @@ def run_pipeline(
         "available_models": available_models,
         "host": resolved_host,
         "thinking_mode": normalize_thinking_mode(thinking_mode),
+        "run_metadata": run_metadata,
         "target_duration_range": target_duration_range,
         "response": response,
         "validation_errors": validation_errors,
@@ -1992,13 +2087,26 @@ def main():
         sys.exit(1)
 
     source = result["source"]
+    run_metadata = result.get("run_metadata", {})
     print(f"Transcript segments: {result['segment_count']}")
     print(f"Timecode boundaries: {result['valid_timecode_count']}")
     print(f"Source: {source.source_name}")
     print(f"Rate: {source.actual_fps:.3f}fps | Duration: {source.duration_seconds:.1f}s")
     print(f"Resolution: {source.width}x{source.height}")
-    print(f"Model: {args.model}")
+    model_info = run_metadata.get("model", {})
+    print(f"Model: {model_info.get('resolved_id') or args.model}")
     print(f"Thinking mode: {result['thinking_mode']}")
+    print(f"Run timestamp: {run_metadata.get('timestamp', 'unknown')}")
+    print(
+        "Input descriptors: "
+        f"transcript_sha256={run_metadata.get('input_descriptors', {}).get('transcript', {}).get('sha256', 'unknown')} "
+        f"xml_sha256={run_metadata.get('input_descriptors', {}).get('premiere_xml', {}).get('sha256', 'unknown')}"
+    )
+    parser_versions = run_metadata.get("parser_versions", {})
+    print(
+        "Parser/validator versions: "
+        + ", ".join(f"{key}={value}" for key, value in parser_versions.items())
+    )
     if result["target_duration_range"]:
         print(
             "Target duration: "
