@@ -7,6 +7,11 @@ after each iteration and it's included in prompts for context.
 
 *Add reusable patterns discovered during development here.*
 
+- ### Fixture-driven integration test pattern
+- Prefer end-to-end CLI/web tests driven by files in `tests/fixtures` and patching LLM/host interactions at the highest calling layer.
+- Assert deterministic payload structure (status/error codes + keys/shape), then add path-level assertions (for example generated files) on positive paths.
+- Keep malformed/edge fixture coverage in one place per suite (pipeline for CLI surface, webapp for HTTP payload contract).
+
 ### Error-response pattern (CLI + Flask)
 - For user-facing recoverable failures, use a single typed payload shape:
   - `code`
@@ -216,4 +221,26 @@ after each iteration and it's included in prompts for context.
     - Keep CLI and Flask sharing one `BiteBuilderError` payload schema to minimize drift in user-facing diagnostics.
   - Gotchas encountered:
     - `mypy` and `flake8` are not installed in this environment; only compile- and test-level checks were executable.
+---
+
+## 2026-03-24 - US-006
+- Added fixture-backed deterministic integration tests for CLI and web paths with mocked LLM responses.
+- Added end-to-end coverage for malformed fixtures and transcript timecode edge failures with structured payload assertions.
+- Ensured success and validation-failure UI orchestration paths avoid live Ollama by mocking endpoint-level LLM orchestration behavior.
+- Added new fixtures:
+  - `tests/fixtures/malformed_transcript.txt`
+  - `tests/fixtures/invalid_premiere.xml`
+- Files changed:
+  - [tests/fixtures/malformed_transcript.txt](/home/dietrich001/bitebuilder/tests/fixtures/malformed_transcript.txt)
+  - [tests/fixtures/invalid_premiere.xml](/home/dietrich001/bitebuilder/tests/fixtures/invalid_premiere.xml)
+  - [tests/test_pipeline.py](/home/dietrich001/bitebuilder/tests/test_pipeline.py)
+  - [tests/test_webapp.py](/home/dietrich001/bitebuilder/tests/test_webapp.py)
+  - [.ralph-tui/progress.md](/home/dietrich001/bitebuilder/.ralph-tui/progress.md)
+- **Learnings:**
+  - Patterns discovered:
+    - CLI shape assertions are most stable when they assert both output artifacts and `_llm_response.json` contract.
+    - Fixture-level malformed inputs (timecode edge + XML parse errors) are easier to maintain than repeated inline strings.
+  - Gotchas encountered:
+    - `serialize_generation_result()` expects `source.to_dict()`; mocked run payloads should use a source object (not a raw dict) in web endpoint tests.
+    - `parse_transcript()` can return multiple errors per line, so assertions should target the expected error field rather than full-string equality.
 ---

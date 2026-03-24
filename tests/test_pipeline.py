@@ -27,6 +27,8 @@ from bitebuilder import run_pipeline
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 TRANSCRIPT_FIXTURE = FIXTURES_DIR / "sample_transcript.txt"
 XML_FIXTURE = FIXTURES_DIR / "sample_premiere.xml"
+INVALID_TRANSCRIPT_FIXTURE = FIXTURES_DIR / "malformed_transcript.txt"
+INVALID_XML_FIXTURE = FIXTURES_DIR / "invalid_premiere.xml"
 
 MOCK_RESPONSE = {
     "selection_status": "ok",
@@ -322,6 +324,98 @@ class BiteBuilderPipelineTests(unittest.TestCase):
 
             debug_response = json.loads((output_dir / "_llm_response.json").read_text())
             self.assertEqual(len(debug_response["options"]), 2)
+
+    def test_cli_fixture_output_shape_is_deterministic(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir) / "output"
+            argv = [
+                "bitebuilder.py",
+                "--transcript",
+                str(TRANSCRIPT_FIXTURE),
+                "--xml",
+                str(XML_FIXTURE),
+                "--brief",
+                "45 second proof of concept",
+                "--options",
+                "2",
+                "--output",
+                str(output_dir),
+            ]
+
+            with patch("bitebuilder.resolve_host", return_value=("http://127.0.0.1:11435", ["qwen3:8b"])), \
+                 patch("bitebuilder.ollama_generate", return_value=MOCK_RESPONSE), \
+                 patch("sys.argv", argv), \
+                 redirect_stdout(io.StringIO()), \
+                 redirect_stderr(io.StringIO()):
+                bitebuilder.main()
+
+            generated = sorted(output_dir.glob("*.xml"))
+            self.assertEqual([path.name for path in generated], [
+                "Margin_Story.xml",
+                "Proof_Points.xml",
+            ])
+
+            result = json.loads((output_dir / "_llm_response.json").read_text(encoding="utf-8"))
+            self.assertEqual(result["selection_status"], "ok")
+            self.assertEqual(len(result.get("options", [])), 2)
+
+            option = result["options"][0]
+            self.assertIn("name", option)
+            self.assertIn("description", option)
+            self.assertIn("estimated_duration_seconds", option)
+            self.assertIn("cuts", option)
+            self.assertEqual(len(option["cuts"]), 3)
+
+            first_cut = option["cuts"][0]
+            self.assertEqual(first_cut["segment_index"], 0)
+            self.assertEqual(first_cut["tc_in"], "00:00:00:00")
+            self.assertEqual(first_cut["tc_out"], "00:00:05:00")
+            self.assertEqual(first_cut["speaker"], "Speaker 1")
+
+    def test_cli_rejects_fixtureed_malformed_transcript_with_structured_code(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir) / "output"
+            with patch("bitebuilder.resolve_host", return_value=("http://127.0.0.1:11435", ["qwen3:8b"])), \
+                 patch("bitebuilder.ollama_generate", return_value=MOCK_RESPONSE), \
+                 redirect_stdout(io.StringIO()), \
+                 redirect_stderr(io.StringIO()):
+                with self.assertRaises(BiteBuilderError) as exc:
+                    run_pipeline(
+                        transcript_text=INVALID_TRANSCRIPT_FIXTURE.read_text(encoding="utf-8"),
+                        xml_text=XML_FIXTURE.read_text(encoding="utf-8"),
+                        brief="45 second proof of concept",
+                        options=1,
+                        output_dir=str(output_dir),
+                        host="http://127.0.0.1:11435",
+                    )
+
+            self.assertEqual(exc.exception.error["code"], "TRANSCRIPT-TIMECODE-INVALID")
+            errors = exc.exception.error.get("details", {}).get("errors", [])
+            self.assertTrue(errors)
+            self.assertEqual(errors[0]["field"], "timecode")
+            if output_dir.exists():
+                self.assertEqual(list(output_dir.iterdir()), [])
+
+    def test_cli_rejects_fixtureed_invalid_xml(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir) / "output"
+            with patch("bitebuilder.resolve_host", return_value=("http://127.0.0.1:11435", ["qwen3:8b"])), \
+                 patch("bitebuilder.ollama_generate", return_value=MOCK_RESPONSE), \
+                 redirect_stdout(io.StringIO()), \
+                 redirect_stderr(io.StringIO()):
+                with self.assertRaises(BiteBuilderError) as exc:
+                    run_pipeline(
+                        transcript_text=TRANSCRIPT_FIXTURE.read_text(encoding="utf-8"),
+                        xml_text=INVALID_XML_FIXTURE.read_text(encoding="utf-8"),
+                        brief="45 second proof of concept",
+                        options=1,
+                        output_dir=str(output_dir),
+                        host="http://127.0.0.1:11435",
+                    )
+
+            self.assertEqual(exc.exception.error["code"], "XML-MALFORMED")
+            if output_dir.exists():
+                self.assertEqual(list(output_dir.iterdir()), [])
 
     def test_generate_edit_options_retries_once_then_succeeds(self):
         with tempfile.TemporaryDirectory() as temp_dir:

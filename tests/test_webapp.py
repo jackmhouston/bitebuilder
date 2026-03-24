@@ -111,6 +111,26 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(payload["segments"][0]["segment_index"], 0)
         self.assertGreater(payload["segments"][0]["duration_seconds"], 0)
 
+    def test_parse_transcript_endpoint_timecode_edge_structured_error(self):
+        response = self.client.post("/api/parse-transcript", json={
+            "transcript_text": (
+                "00:00:00:24 - 00:00:01:00\nSpeaker 1\n"
+                "Frame boundary is out of range for 24fps.\n"
+            ),
+            "xml_text": (
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                "<xmeml version=\"4\"><sequence><media><video><track><clipitem>"
+                "<file><name>Sample Interview.mov</name>"
+                "<pathurl>file://localhost/C%3A/Projects/BiteBuilder/Sample%20Interview.mov</pathurl>"
+                "</file></clipitem></track></video></media></sequence></xmeml>"
+            ),
+        })
+        self.assertEqual(response.status_code, 400)
+        payload = response.get_json()
+        self.assertEqual(payload["status"], "error")
+        self.assertEqual(payload["error"]["code"], "TRANSCRIPT-TIMECODE-INVALID")
+        self.assertEqual(payload["error"]["details"]["errors"][0]["field"], "timecode")
+
     def test_generate_missing_brief_returns_structured_error(self):
         response = self.client.post("/api/generate", json={
             "transcript_text": (
@@ -145,6 +165,140 @@ class WebAppTests(unittest.TestCase):
         payload = response.get_json()
         self.assertEqual(payload["status"], "error")
         self.assertEqual(payload["error"]["code"], "XML-MALFORMED")
+
+    @patch("webapp.run_pipeline", side_effect=BiteBuilderError({
+        **build_validation_error(
+            code="XML-MALFORMED",
+            error_type="invalid_xml",
+            message="Invalid Premiere XML content.",
+            expected_input_format="Valid Premiere XML export text.",
+            next_action="Export XML again from Premiere and retry.",
+            stage="premiere_xml",
+            recoverable=True,
+            details={"cause": "malformed xml"},
+        ),
+    }))
+    def test_generate_endpoint_invalid_xml_returns_structured_error(self, _run_pipeline):
+        response = self.client.post("/api/generate", json={
+            "transcript_text": (
+                "00:00:00:00 - 00:00:05:00\nSpeaker 1\n"
+                "Most shops think better nutrition sounds expensive.\n"
+            ),
+            "xml_text": (
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><xmeml><sequence><media></sequence></xmeml>"
+            ),
+            "brief": "45 second proof of concept",
+        })
+        self.assertEqual(response.status_code, 400)
+        payload = response.get_json()
+        self.assertEqual(payload["status"], "error")
+        self.assertEqual(payload["error"]["code"], "XML-MALFORMED")
+        self.assertIn("recoverable", payload["error"])
+
+    @patch("webapp.run_pipeline")
+    def test_generate_endpoint_success_with_mocked_llm_response_payload_shape(self, mock_run_pipeline):
+        segment = type(
+            "Segment",
+            (),
+            {
+                "tc_in": "00:00:00:00",
+                "tc_out": "00:00:05:00",
+                "speaker": "Speaker 1",
+                "text": "Hook.",
+            },
+        )()
+        mock_run_pipeline.return_value = {
+            "segment_count": 1,
+            "source": DummySource(),
+            "thinking_mode": "auto",
+            "target_duration_range": [45, 60],
+            "validation_errors": [],
+            "response": {
+                "selection_status": "ok",
+                "options": [{
+                    "name": "Margin Story",
+                    "description": "Opens with the objection and closes with a test invitation.",
+                    "estimated_duration_seconds": 15.0,
+                    "cuts": [{
+                        "segment_index": 0,
+                        "tc_in": "00:00:00:00",
+                        "tc_out": "00:00:05:00",
+                        "speaker": "Speaker 1",
+                        "purpose": "HOOK",
+                        "dialogue_summary": "Hook.",
+                    }],
+                }],
+            },
+            "segments": [segment],
+            "debug_artifacts": {"candidate_shortlist": []},
+            "debug_files": {},
+            "output_files": [{
+                "name": "Margin Story",
+                "description": "Hook cut",
+                "filename": "Margin_Story.xml",
+                "path": "/tmp/Margin_Story.xml",
+                "cut_count": 1,
+                "actual_duration_seconds": 5.0,
+                "estimated_duration_seconds": 5.0,
+            }],
+        }
+
+        response = self.client.post("/api/generate", json={
+            "transcript_text": (
+                "00:00:00:00 - 00:00:05:00\nSpeaker 1\n"
+                "Most shops think better nutrition sounds expensive.\n"
+            ),
+            "xml_text": (
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                "<xmeml version=\"4\"><sequence><media><video><track><clipitem>"
+                "<file><name>Sample Interview.mov</name>"
+                "<pathurl>file://localhost/C%3A/clip.mov</pathurl>"
+                "</file></clipitem></track></video></media></sequence></xmeml>"
+            ),
+            "brief": "45 second proof of concept",
+        })
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["thinking_mode"], "auto")
+        self.assertIn("files", payload)
+        self.assertEqual(payload["files"][0]["filename"], "Margin_Story.xml")
+        self.assertEqual(payload["files"][0]["selected_cuts"][0]["segment_index"], 0)
+        self.assertEqual(len(payload["options_detail"][0]["selected_cuts"]), 1)
+
+    @patch("webapp.run_pipeline", side_effect=BiteBuilderError({
+        **build_validation_error(
+            code="TRANSCRIPT-TIMECODE-INVALID",
+            error_type="invalid_transcript_content",
+            message="Transcript timecodes are invalid.",
+            expected_input_format="Timecoded transcript format.",
+            next_action="Fix timecode formatting and order.",
+            stage="transcript",
+            recoverable=True,
+            details={"errors": [{"field": "time_transition", "line": 3, "message": "bad transition"}]},
+        ),
+        "partial": {
+            "status": "partial",
+            "stage": "transcript",
+        },
+    }))
+    def test_generate_endpoint_validation_failure_is_recoverable(self, _run_pipeline):
+        response = self.client.post("/api/generate", json={
+            "transcript_text": (
+                "00:00:05:00 - 00:00:10:00\nSpeaker 1\n"
+                "Bad order.\n"
+            ),
+            "xml_text": (
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                "<xmeml version=\"4\"><sequence><media><video><track><clipitem>"
+                "<file><name>Sample Interview.mov</name><pathurl>file://localhost/C%3A/clip.mov</pathurl>"
+                "</file></clipitem></track></video></media></sequence></xmeml>"
+            ),
+            "brief": "45 second proof of concept",
+        })
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["status"], "partial")
+        self.assertEqual(payload["error"]["code"], "TRANSCRIPT-TIMECODE-INVALID")
 
     @patch("webapp.build_candidate_shortlist", return_value=[{
         "segment_index": 0,
