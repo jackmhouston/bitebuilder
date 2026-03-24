@@ -7,6 +7,13 @@ after each iteration and it's included in prompts for context.
 
 *Add reusable patterns discovered during development here.*
 
+### Reusable Pattern: Force chat re-render in Playwright via page state mutation
+- For UI rendering smoke checks on the copilot page, preload synthetic chat payload in `localStorage`, navigate, then mutate `window.state` in-browser and call `window.renderAll()` (or `renderChat()` fallback) to validate chat rendering behavior deterministically without issuing backend requests.
+
+### Reusable Pattern: Playwright computed-style assertions
+- Validate spacing with `getComputedStyle` + numeric parsing instead of string equality to tolerate unit formatting differences (`px` values and fractional pixels).
+- Reuse a short page bootstrap assertion (`expect(locator('.app-shell')).toBeVisible()`) before style reads so the layout test is deterministic across routes.
+
 ### Reusable Pattern: Local rendering passes with optional block-aware parsing
 - Keep a small helper (`renderWithSegmentChips`) for existing `[N]` chip rendering.
 - In the parent renderer, parse raw chat content into prose blocks and special blocks before running the shared chip renderer, so new block structures can coexist without changing existing behavior.
@@ -25,9 +32,49 @@ after each iteration and it's included in prompts for context.
   - Patterns discovered
     - Render and event wiring are page-agnostic; guard removed controls by deleting their selectors and listener branches wherever defined, even if helpers remain unused.
     - Targeted null checks in Playwright (`locator(...).toHaveCount(0)`) are a stable way to assert UI cleanup across templates and avoids page-specific selectors.
-  - Gotchas encountered
+- Gotchas encountered
     - `populateModelSelect()` was still called in the render cycle after removing node references, which would have caused runtime failures when `modelSelect` was no longer defined; removing both call sites and function avoided this.
     - `fetchModels()` and model status updates still referenced removed status DOM nodes; these references needed to be removed even though model discovery logic itself can remain as dead code.
+---
+
+## [2026-03-24] - US-004
+- Revalidated and finalized the full copilot smoke test story with no Python regressions.
+- Files changed:
+  - `tests/playwright/copilot_smoke.spec.js` (existing implementation aligned to acceptance checks)
+  - `package.json` (Playwright script aligned to `npx playwright test`)
+  - `playwright.config.js` (`headless` now CI-gated)
+  - `.ralph-tui/progress.md` (append)
+- **Learnings:**
+  - Patterns discovered
+    - Seeding `bitebuilder.studio.draft.v2` before navigation plus a forced `window.renderAll()` re-render is the most deterministic path for copilot rendering assertions.
+    - CLI behavior can differ across environments (`playwright` global vs `npx playwright`) so script should prefer the CI-compatible explicit invocation.
+  - Gotchas encountered
+    - Local `playwright` CLI in this environment does not support `test`, so script compatibility required adjustment.
+---
+
+## [2026-03-24] - US-004
+- Added `tests/playwright/copilot_smoke.spec.js` to run an end-to-end copilot UI smoke pass across combined UX changes from US-001 through US-003.
+- The test navigates to `/project/copilot`, verifies page title/heading context, asserts `#modelSelect` and `#timeoutInput` are absent, checks `.app-shell` left padding is at least `24px`, injects a synthetic assistant bite block message, triggers a rerender via `window.state` and `renderAll()`, and verifies a `.bite-card` renders with `border-left-style: solid`.
+- Confirmed required Playwright scaffolding (`playwright.config.js`, `test:playwright` script, dependency) already existed from prior work and was reused unchanged for this story.
+- **Learnings:**
+  - Patterns discovered
+    - Reusing `page.addInitScript` to seed `bitebuilder.studio.draft.v2` creates deterministic chat fixtures without network interaction.
+    - `window.renderAll()` is a reliable, low-flake way to force UI recomputation after in-browser state mutation for Playwright assertions.
+  - Gotchas encountered
+    - The copilot route is both `/project/chat` and `/project/copilot`; using the alias route keeps the test aligned with user-facing naming while still hitting existing template logic.
+---
+
+## [2026-03-24] - US-003
+- Increased layout breathing room in `static/app.css` by updating `.app-shell` max-width to `1100px`, `.app-shell` padding to `24px`, `.panel-grid` gap to `20px`, `.message` padding with top/bottom set to `12px`, and `.chat-log` horizontal breathing room.
+- Updated responsive behavior to `@media (max-width: 1060px)` to align with the widened shell.
+- Added `tests/playwright/layout_margins.spec.js` with assertions for `.app-shell` left padding and `.message` top padding on `/project/chat`, plus a spot-check load test for `/project/intake`, `/project/generate`, and `/project/export`.
+- Kept existing Playwright setup and selectors unchanged for compatibility with existing UI templates.
+- **Learnings:**
+  - Patterns discovered
+    - Playwright CSS assertions are more robust when converting computed values with `parseFloat` and comparing minimum thresholds.
+    - For pages where a `.message` may be absent initially, creating a temporary probe message in `.chat-log` allows style assertions without waiting for chat history to render.
+  - Gotchas encountered
+    - `.chat-log` already had generic padding from an earlier shared selector block, so explicit `.chat-log` padding needed a deliberate override to enforce the intended horizontal spacing.
 ---
 
 ## [2026-03-24] - US-001
