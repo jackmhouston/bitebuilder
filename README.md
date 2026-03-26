@@ -28,7 +28,6 @@ BiteBuilder is a compact product and systems project at the intersection of:
 - working local prototype with routed upload, validation, preview, generate, and download steps
 - copilot UI for transcript-aware prompting and bite review
 - deterministic validation around transcript boundaries and sequence generation
-- fixture-backed Python tests plus Playwright smoke coverage
 
 ## Screenshot Plan
 
@@ -73,15 +72,8 @@ CLI example:
 
 ```bash
 .venv/bin/python bitebuilder.py \
-  --transcript tests/fixtures/sample_transcript.txt \
-  --xml tests/fixtures/sample_premiere.xml \
+  --transcript /path/to/transcript.txt \
+  --xml /path/to/source.xml \
   --brief "45 second proof of concept" \
   --output ./output
-```
-
-Validation:
-
-```bash
-.venv/bin/python -m unittest discover -s tests -v
-npm run test:playwright
 ```

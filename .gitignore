@@ -1,16 +1,14 @@
 __pycache__/
 *.py[cod]
-.pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .venv/
 venv/
-.playwright-cli/
+.ralph-tui/
 dist/
 build/
 *.egg-info/
 *.xml
 !sample-data/*.xml
 output/
-test_output/
 *.log

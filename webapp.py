@@ -42,7 +42,6 @@ from parser.transcript import TranscriptValidationError
 
 ROOT = Path(__file__).resolve().parent
 OUTPUT_ROOT = ROOT / "output" / "web"
-PRESETS_ROOT = ROOT / "testing"
 CHAT_TRANSCRIPT_LIMIT = 12000
 JOB_STORE = {}
 JOB_LOCK = threading.Lock()
@@ -167,31 +166,8 @@ def trim_transcript_for_chat(formatted_transcript: str) -> str:
     )
 
 
-def load_preset_manifest(preset_id: str) -> dict:
-    preset_path = PRESETS_ROOT / preset_id / "preset.json"
-    if not preset_path.exists():
-        raise FileNotFoundError(f"Preset '{preset_id}' was not found.")
-    return json.loads(preset_path.read_text(encoding="utf-8"))
-
-
 def resolve_repo_path(relative_path: str) -> Path:
     return (ROOT / relative_path).resolve()
-
-
-def available_presets() -> list[dict]:
-    presets = []
-    if not PRESETS_ROOT.exists():
-        return presets
-
-    for preset_path in sorted(PRESETS_ROOT.glob("*/preset.json")):
-        manifest = json.loads(preset_path.read_text(encoding="utf-8"))
-        presets.append({
-            "id": manifest["id"],
-            "name": manifest["name"],
-            "brief": manifest["brief"],
-            "prd_path": manifest.get("prd_path", ""),
-        })
-    return presets
 
 
 def build_page_context(
@@ -558,43 +534,6 @@ def create_app() -> Flask:
             "default_model": preferred_model(models),
             "default_thinking_mode": normalize_thinking_mode(DEFAULT_THINKING_MODE),
             "host": active_host,
-        })
-
-    @app.get("/api/presets")
-    def get_presets():
-        return jsonify({"presets": available_presets()})
-
-    @app.get("/api/presets/<preset_id>")
-    def get_preset(preset_id: str):
-        try:
-            manifest = load_preset_manifest(preset_id)
-            transcript_path = resolve_repo_path(manifest["transcript_path"])
-            xml_path = resolve_repo_path(manifest["xml_path"])
-        except Exception as exc:
-            return validation_error_response(build_validation_error(
-                code="PRESET-UNAVAILABLE",
-                error_type="missing_inputs",
-                message="Preset could not be loaded.",
-                expected_input_format="Preset id that exists and resolves to readable manifest files.",
-                next_action="Choose a valid preset id and retry.",
-                stage="preset",
-                details={"cause": str(exc)},
-            ), 404)
-
-        return jsonify({
-            "id": manifest["id"],
-            "name": manifest["name"],
-            "brief": manifest["brief"],
-            "project_context": manifest["project_context"],
-            "options": manifest["options"],
-            "timeout": manifest["timeout"],
-            "model": manifest.get("model", DEFAULT_MODEL),
-            "thinking_mode": manifest.get("thinking_mode", DEFAULT_THINKING_MODE),
-            "transcript_name": transcript_path.name,
-            "xml_name": xml_path.name,
-            "transcript_text": transcript_path.read_text(encoding="utf-8"),
-            "xml_text": xml_path.read_text(encoding="utf-8"),
-            "prd_path": manifest.get("prd_path", ""),
         })
 
     @app.get("/repo-file/<path:repo_path>")
