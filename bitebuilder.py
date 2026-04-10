@@ -130,6 +130,46 @@ def format_error_for_log(error: dict) -> str:
     return json.dumps(error, sort_keys=True, separators=(",", ":"))
 
 
+def coerce_request_int(
+    value,
+    *,
+    field_name: str,
+    default: int,
+    minimum: int = 1,
+    code: str,
+    stage: str = "input",
+) -> int:
+    """Coerce a JSON/request value into a bounded integer or raise a structured error."""
+    if value in (None, ""):
+        return default
+
+    try:
+        coerced = int(str(value).strip())
+    except (TypeError, ValueError) as exc:
+        raise BiteBuilderError(build_validation_error(
+            code=code,
+            error_type="invalid_numeric_input",
+            message=f"{field_name} must be a whole number.",
+            expected_input_format=f"{field_name}=integer >= {minimum}",
+            next_action=f"Provide a numeric {field_name} value and retry.",
+            stage=stage,
+            details={"field": field_name, "value": value, "cause": str(exc)},
+        )) from exc
+
+    if coerced < minimum:
+        raise BiteBuilderError(build_validation_error(
+            code=code,
+            error_type="invalid_numeric_input",
+            message=f"{field_name} must be at least {minimum}.",
+            expected_input_format=f"{field_name}=integer >= {minimum}",
+            next_action=f"Provide a {field_name} value of {minimum} or greater.",
+            stage=stage,
+            details={"field": field_name, "value": value},
+        ))
+
+    return coerced
+
+
 def validate_brief(brief: str) -> str:
     """Validate and normalize the creative brief."""
     normalized = (brief or "").strip()

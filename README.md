@@ -29,6 +29,16 @@ BiteBuilder is a compact product and systems project at the intersection of:
 - copilot UI for transcript-aware prompting and bite review
 - deterministic validation around transcript boundaries and sequence generation
 
+## Canonical Codepath
+
+The current canonical application path is the top-level app:
+
+- `bitebuilder.py` for the CLI pipeline
+- `webapp.py` for the local Flask UI
+- `parser/`, `generator/`, and `llm/` for supporting logic
+
+The alternate `src/bitebuilder/` package is not the active runtime path for this prototype and should be treated as inactive until an explicit migration plan lands.
+
 ## Screenshot Plan
 
 Add one strong UI screenshot near the top of this README.
@@ -61,6 +71,11 @@ Deliverables:
 - The browser UI expects transcript and XML contents to be uploaded from the client.
 
 ## Run Locally
+
+Canonical local entrypoints:
+
+- Web UI: `.venv/bin/python webapp.py`
+- CLI: `.venv/bin/python bitebuilder.py --help`
 
 ```bash
 python3 -m venv .venv

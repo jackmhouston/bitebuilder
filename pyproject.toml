@@ -13,6 +13,9 @@ dependencies = [
   "requests>=2.31,<3",
 ]
 
+# Canonical runtime entrypoints currently live in the top-level modules
+# `bitebuilder.py` and `webapp.py`. The `src/bitebuilder/` tree is not part
+# of the packaged runtime until an explicit migration plan lands.
 [project.scripts]
 bitebuilder = "bitebuilder:main"
 

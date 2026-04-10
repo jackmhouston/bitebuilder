@@ -17,6 +17,7 @@ from bitebuilder import (
     build_candidate_shortlist,
     BiteBuilderError,
     build_validation_error,
+    coerce_request_int,
     parse_premiere_xml_safe,
     validate_brief,
     format_error_for_log,
@@ -581,7 +582,16 @@ def create_app() -> Flask:
         model = (data.get("model") or DEFAULT_MODEL).strip()
         brief = (data.get("brief") or "").strip()
         project_context = (data.get("project_context") or "").strip()
-        timeout = int(data.get("timeout") or DEFAULT_TIMEOUT)
+        try:
+            timeout = coerce_request_int(
+                data.get("timeout"),
+                field_name="timeout",
+                default=DEFAULT_TIMEOUT,
+                code="CHAT-TIMEOUT-INVALID",
+                stage="chat",
+            )
+        except BiteBuilderError as exc:
+            return validation_error_response(exc.error)
         thinking_mode = normalize_thinking_mode(data.get("thinking_mode"))
         messages = data.get("messages") or []
         try:
@@ -916,8 +926,23 @@ def create_app() -> Flask:
         brief = (data.get("brief") or "").strip()
         project_context = (data.get("project_context") or "").strip()
         model = (data.get("model") or DEFAULT_MODEL).strip()
-        options = int(data.get("options") or 3)
-        timeout = int(data.get("timeout") or DEFAULT_TIMEOUT)
+        try:
+            options = coerce_request_int(
+                data.get("options"),
+                field_name="options",
+                default=3,
+                code="GENERATE-OPTIONS-INVALID",
+                stage="generation",
+            )
+            timeout = coerce_request_int(
+                data.get("timeout"),
+                field_name="timeout",
+                default=DEFAULT_TIMEOUT,
+                code="GENERATE-TIMEOUT-INVALID",
+                stage="generation",
+            )
+        except BiteBuilderError as exc:
+            return validation_error_response(exc.error)
         thinking_mode = normalize_thinking_mode(data.get("thinking_mode"))
         messages = data.get("messages") or []
         accepted_plan = data.get("accepted_plan") or {}
@@ -1004,8 +1029,23 @@ def create_app() -> Flask:
         brief = (data.get("brief") or "").strip()
         project_context = (data.get("project_context") or "").strip()
         model = (data.get("model") or DEFAULT_MODEL).strip()
-        options = int(data.get("options") or 3)
-        timeout = int(data.get("timeout") or DEFAULT_TIMEOUT)
+        try:
+            options = coerce_request_int(
+                data.get("options"),
+                field_name="options",
+                default=3,
+                code="GENERATE-JOB-OPTIONS-INVALID",
+                stage="generation",
+            )
+            timeout = coerce_request_int(
+                data.get("timeout"),
+                field_name="timeout",
+                default=DEFAULT_TIMEOUT,
+                code="GENERATE-JOB-TIMEOUT-INVALID",
+                stage="generation",
+            )
+        except BiteBuilderError as exc:
+            return validation_error_response(exc.error)
         thinking_mode = normalize_thinking_mode(data.get("thinking_mode"))
         messages = data.get("messages") or []
         accepted_plan = data.get("accepted_plan") or {}

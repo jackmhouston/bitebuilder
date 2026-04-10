@@ -3,6 +3,7 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .venv/
+.DS_Store
 venv/
 .ralph-tui/
 dist/
@@ -11,5 +12,5 @@ build/
 *.xml
 !sample-data/*.xml
 output/
-tests/
 *.log
+.omx/
