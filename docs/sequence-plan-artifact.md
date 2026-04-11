@@ -82,3 +82,16 @@ Future refinement should update bite records in-place instead of concatenating n
 - Do not implement multi-turn refinement commands yet.
 - Do not make the web UI depend on this artifact yet.
 - Do not add new dependencies.
+
+## Implemented API
+
+The current core implementation lives in `generator/sequence_plan.py` and keeps the draft JSON shape intact:
+
+- `SequencePlan`, `SequencePlanOption`, and `SequencePlanBite` model the artifact in memory.
+- `build_sequence_plan(...)` constructs a validated plan from option dictionaries and zero-based `TranscriptSegment` references.
+- `SequencePlan.from_dict(..., transcript_segments=...)` and `SequencePlan.to_dict()` provide JSON-safe round-trip behavior.
+- `SequencePlan.to_cuts(option_id=None)` returns only `status: "selected"` bites as `[{"tc_in": ..., "tc_out": ...}]` dictionaries for `generator.xmeml.generate_sequence`.
+- Valid bite statuses are `selected` and `removed`; removed bites remain in the artifact but are omitted from XMEML-ready cuts.
+- `replaces_bite_id` is preserved as metadata only. The module does not apply replacement/swap behavior in this tranche.
+
+`segment_index` is zero-based and must exactly reference the transcript segment whose `tc_in` and `tc_out` match the bite. Invalid indexes, mismatched timecode pairs, unknown statuses, and missing bite identifiers fail fast with `SequencePlanValidationError`.
