@@ -2086,7 +2086,7 @@ def main():
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    logger = logging.getLogger("bitebuilder.cli")
+    logger = logging.getLogger("bitebuilder")
 
     args = parse_args()
 

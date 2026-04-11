@@ -1,12 +1,11 @@
 # Canonical Runtime Proof
 
-For the current stabilization window, BiteBuilder's canonical runtime is the top-level app:
+For the current fundamentals track, BiteBuilder's canonical runtime is the top-level core:
 
 - `bitebuilder.py` for CLI orchestration
-- `webapp.py` for the local Flask UI/API
 - `parser/`, `generator/`, and `llm/` for supporting logic
 
-The `src/bitebuilder/` tree remains quarantined for inventory/reference only and is not part of the packaged runtime until an explicit migration plan lands.
+`webapp.py`, `templates/`, and `static/` remain in `main` for reference, but are inactive/low-priority during the fundamentals track. The former duplicate `src/bitebuilder/` tree has been inventoried in `docs/src-bitebuilder-inventory.md` and removed from the active tree.
 
 ## Proof point
 
@@ -15,9 +14,8 @@ Verified locally from the repository root on 2026-04-10:
 ```bash
 .venv/bin/python - <<'PY'
 from pathlib import Path
-import bitebuilder, webapp
+import bitebuilder
 print(Path(bitebuilder.__file__).name)
-print(Path(webapp.__file__).name)
 print(callable(getattr(bitebuilder, "main", None)))
 PY
 ```
@@ -26,8 +24,17 @@ Expected proof output:
 
 ```text
 bitebuilder.py
-webapp.py
 True
+```
+
+Optional retained-UI check:
+
+```bash
+.venv/bin/python - <<'PY'
+from pathlib import Path
+import webapp
+print(Path(webapp.__file__).name)
+PY
 ```
 
 Additional supporting checks:

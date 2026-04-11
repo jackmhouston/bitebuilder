@@ -25,19 +25,18 @@ BiteBuilder is a compact product and systems project at the intersection of:
 
 ## Current State
 
-- working local prototype with routed upload, validation, preview, generate, and download steps
-- copilot UI for transcript-aware prompting and bite review
-- deterministic validation around transcript boundaries and sequence generation
+- CLI/core pipeline is the current fundamentals focus: parse transcript + Premiere XML, validate exact transcript timecodes, call a local model, and generate XMEML
+- Flask/copilot UI exists in the repo but is low-priority/inactive for the current fundamentals track
+- deterministic validation around transcript boundaries, timecode math, and sequence generation
 
 ## Canonical Codepath
 
-The current canonical application path is the top-level app:
+The current canonical application path is the top-level core:
 
 - `bitebuilder.py` for the CLI pipeline
-- `webapp.py` for the local Flask UI
 - `parser/`, `generator/`, and `llm/` for supporting logic
 
-The alternate `src/bitebuilder/` package is not the active runtime path for this prototype and should be treated as inactive until an explicit migration plan lands.
+`webapp.py`, `templates/`, and `static/` remain in `main` for reference, but they are inactive/low-priority during the current fundamentals track. The duplicate `src/bitebuilder/` package has been inventoried in `docs/src-bitebuilder-inventory.md` and removed from the active tree.
 
 ## Screenshot Plan
 
@@ -45,7 +44,7 @@ Add one strong UI screenshot near the top of this README.
 
 Target shot:
 
-- the copilot UI
+- the copilot UI (deferred while web UI is inactive/low-priority)
 - step navigation visible
 - one realistic assistant response rendered as bite cards
 - brief and transcript context visible in the side panel
@@ -58,29 +57,33 @@ Deliverables:
 
 ## Workflow
 
-1. Ingest a timecoded transcript and source XML metadata.
-2. Shape the editorial direction with a concise brief.
-3. Ask the copilot for hooks, arcs, and candidate bite selections.
+1. Ingest a Premiere timecoded transcript and source XML metadata.
+2. Shape editorial direction with project context, optional speaker names, and a concrete sequence goal.
+3. Generate a structured sequence-plan artifact containing ordered bites, source segment references, rationales, and replacement/removal metadata.
 4. Validate selected timecodes against the source transcript.
-5. Export draft XML and continue refinement in the edit system.
+5. Export draft XMEML and continue refinement in the edit system.
 
 ## Notes
 
 - The current interchange format is Premiere XML/XMEML.
 - Real editorial generation requires a local Ollama model.
-- The browser UI expects transcript and XML contents to be uploaded from the client.
+- The browser UI expects transcript and XML contents to be uploaded from the client, but it is inactive/low-priority for the current fundamentals track.
+- Future refinement should operate on a structured sequence-plan artifact before adding chat/UI commands.
 
 ## Run Locally
 
-Canonical local entrypoints:
+Canonical local entrypoint for the fundamentals track:
+
+- CLI: `.venv/bin/python bitebuilder.py --help`
+
+Inactive/low-priority UI entrypoint retained for reference:
 
 - Web UI: `.venv/bin/python webapp.py`
-- CLI: `.venv/bin/python bitebuilder.py --help`
 
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
-.venv/bin/python webapp.py
+.venv/bin/python bitebuilder.py --help
 ```
 
 CLI example:
