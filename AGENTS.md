@@ -92,3 +92,11 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+
+## Reporting Requirement
+
+For every final implementation or planning report, include:
+- **How to test:** exact commands the user can run locally, including any fixture assumptions or expected pass signal.
+- **Next steps:** the recommended next 1-3 actions, ordered by priority.
+
+Keep this section concise and project-specific; do not bury it in generic summaries.
