@@ -14,3 +14,6 @@ build/
 output/
 *.log
 .omx/
+
+# Local/private Premiere fixture drops
+tests/src/
