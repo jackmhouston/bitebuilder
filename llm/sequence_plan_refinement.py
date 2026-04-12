@@ -36,12 +36,23 @@ def build_sequence_plan_refinement_prompt(
     transcript_segments: Sequence[TranscriptSegment],
     instruction: str,
     target_option_id: str | None = None,
+    max_bite_duration_seconds: float | None = None,
+    max_total_duration_seconds: float | None = None,
+    require_changed_selected_cuts: bool = False,
 ) -> str:
     """Build a strict prompt for revising a full sequence_plan.v1 object."""
     plan_copy = deepcopy(dict(current_plan))
     options = plan_copy.get("options") or []
     default_option_id = options[0].get("option_id") if options and isinstance(options[0], Mapping) else None
     target = target_option_id or default_option_id or "the first option"
+    constraint_lines = []
+    if max_bite_duration_seconds is not None:
+        constraint_lines.append(f"- Every selected bite should be at or below {max_bite_duration_seconds:g} seconds.")
+    if max_total_duration_seconds is not None:
+        constraint_lines.append(f"- Total selected duration should be at or below {max_total_duration_seconds:g} seconds.")
+    if require_changed_selected_cuts:
+        constraint_lines.append("- The revised selected cuts must differ from the current selected cuts.")
+    constraints_text = "\n".join(constraint_lines) if constraint_lines else "- No additional duration/change constraints supplied."
 
     return f"""You are revising a BiteBuilder sequence plan.
 
@@ -61,6 +72,8 @@ Rules:
 - Do not trim, split, or alter timecodes.
 - If the user asks for shorter bites, replace long bites with shorter complete transcript segments.
 - Valid bite statuses are "selected" and "removed" only.
+- Follow these additional duration/change constraints:
+{constraints_text}
 - Preserve replaces_bite_id as metadata only; do not apply replacement behavior.
 - If a target option is specified, revise that option and preserve unrelated options unless the instruction explicitly says otherwise.
 - Keep schema_version exactly "{SCHEMA_VERSION}".

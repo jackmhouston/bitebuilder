@@ -115,3 +115,15 @@ Notes:
 - This mode does not require `--brief`, model, host, timeout, or Ollama.
 - The source plan is not mutated.
 - Successful renders write an XML file plus `_sequence_plan_render.json` metadata.
+
+## Evaluating refinement constraints
+
+Phase 5 adds pure editorial constraint checks in `generator/sequence_plan_constraints.py`.
+
+Use `evaluate_sequence_plan_constraints(...)` to detect when a structurally valid revised plan still fails editorial instructions such as "make this shorter":
+
+- `bite_duration_exceeds_max` when a selected bite is longer than the configured max bite duration.
+- `total_duration_exceeds_max` when selected bite duration exceeds the configured max total duration.
+- `selected_cuts_unchanged` when `require_changed_selected_cuts=True` and the selected `(segment_index, tc_in, tc_out, status)` tuples match the previous plan.
+
+These checks do not call Gemma and do not render XML. They produce JSON-safe results intended for future retry prompts.
