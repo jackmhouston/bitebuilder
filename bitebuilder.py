@@ -2451,6 +2451,147 @@ def run_pipeline(
     }
 
 
+def prompt_with_default(prompt: str, default: str | None = None, *, input_func=input) -> str:
+    """Prompt for a value, returning the default when the user submits empty input."""
+    suffix = f" [{default}]" if default else ""
+    value = input_func(f"{prompt}{suffix}: ").strip()
+    return value or (default or "")
+
+
+def _parse_optional_float(value: str) -> float | None:
+    value = (value or "").strip()
+    return float(value) if value else None
+
+
+def summarize_sequence_plan(plan: SequencePlan, option_id: str | None = None) -> str:
+    """Return a readable summary of the selected sequence-plan option."""
+    option = plan.option(option_id)
+    lines = [f"Option {option.option_id}: {option.name or option.option_id}"]
+    if option.estimated_duration_seconds is not None:
+        lines.append(f"Estimated duration: {option.estimated_duration_seconds}s")
+    for order, bite in enumerate(option.bites, start=1):
+        summary = bite.dialogue_summary or bite.text or ""
+        if len(summary) > 120:
+            summary = summary[:117].rstrip() + "..."
+        lines.append(
+            f"{order}. [{bite.status}] segment {bite.segment_index} "
+            f"{bite.tc_in} - {bite.tc_out}"
+            + (f" | {bite.purpose}" if bite.purpose else "")
+            + (f" | {bite.speaker}" if bite.speaker else "")
+        )
+        if summary:
+            lines.append(f"   {summary}")
+    return "\n".join(lines)
+
+
+def run_guided_flow(args, *, input_func=input, print_func=print) -> dict:
+    """Run the guided first-pass + optional one-refinement CLI flow."""
+    transcript_path = prompt_with_default("Transcript path", args.transcript, input_func=input_func)
+    xml_path = prompt_with_default("Premiere XML path", args.xml, input_func=input_func)
+    project_context = prompt_with_default("Project context", "", input_func=input_func)
+    goal = prompt_with_default("Goal / creative brief", args.brief, input_func=input_func)
+    model = prompt_with_default("Model", args.model, input_func=input_func)
+    output_dir = prompt_with_default("Output directory", args.output, input_func=input_func)
+    max_bite_duration = _parse_optional_float(prompt_with_default("Max bite duration seconds (optional)", None, input_func=input_func))
+    max_total_duration = _parse_optional_float(prompt_with_default("Max total duration seconds (optional)", None, input_func=input_func))
+    require_changed = prompt_with_default("Require changed cuts on refinement? y/N", "N", input_func=input_func).lower().startswith("y")
+
+    result = run_pipeline(
+        transcript_text=read_text_file(transcript_path),
+        xml_text=read_text_file(xml_path),
+        brief=goal,
+        options=args.options,
+        model=model,
+        output_dir=output_dir,
+        host=args.host,
+        timeout=args.timeout,
+        project_context=project_context,
+        thinking_mode=args.thinking_mode,
+    )
+    print_func("\nFirst-pass sequence plan:")
+    if result.get("sequence_plan_path"):
+        plan_payload = json.loads(read_text_file(result["sequence_plan_path"]))
+        plan = SequencePlan.from_dict(plan_payload, transcript_segments=result["segments"])
+        print_func(summarize_sequence_plan(plan, args.option_id))
+    else:
+        print_func("No sequence plan was produced.")
+
+    action = prompt_with_default("Action: [a]ccept, [r]efine once, [s]top", "a", input_func=input_func).lower()
+    if action not in {"a", "r", "s"}:
+        action = prompt_with_default("Invalid action. Choose [a], [r], or [s]", "a", input_func=input_func).lower()
+    if action not in {"a", "r", "s"}:
+        raise BiteBuilderError(build_validation_error(
+            code="GUIDED-ACTION-INVALID",
+            error_type="invalid_guided_input",
+            message="Guided action must be one of a, r, or s.",
+            expected_input_format="a, r, or s",
+            next_action="Run guided mode again and choose a valid action.",
+            stage="guided",
+        ))
+    if action == "s":
+        print_func("Stopped after first pass.")
+        return {"action": "stop", "result": result}
+    if action == "a":
+        print_func(f"Accepted first pass. Output directory: {result['output_dir']}")
+        return {"action": "accept", "result": result}
+
+    if not result.get("sequence_plan_path"):
+        raise BiteBuilderError(build_validation_error(
+            code="GUIDED-SEQUENCE-PLAN-MISSING",
+            error_type="missing_sequence_plan",
+            message="Cannot refine because the first pass did not produce _sequence_plan.json.",
+            expected_input_format="A successful first-pass generation with _sequence_plan.json.",
+            next_action="Adjust the brief and rerun guided mode.",
+            stage="guided",
+        ))
+
+    instruction = prompt_with_default("Refinement instruction", "make it shorter", input_func=input_func)
+    refinement_dir = os.path.join(output_dir, "refinement-2")
+    try:
+        refine_result = refine_sequence_plan(
+            sequence_plan_text=read_text_file(result["sequence_plan_path"]),
+            transcript_text=read_text_file(transcript_path),
+            xml_text=read_text_file(xml_path),
+            output_dir=refinement_dir,
+            instruction=instruction,
+            option_id=args.option_id,
+            sequence_plan_path=result["sequence_plan_path"],
+            model=model,
+            host=args.host,
+            timeout=args.timeout,
+            thinking_mode=args.thinking_mode,
+            max_bite_duration_seconds=max_bite_duration,
+            max_total_duration_seconds=max_total_duration,
+            require_changed_selected_cuts=require_changed,
+            refinement_retries=args.refinement_retries,
+        )
+    except BiteBuilderError as exc:
+        if exc.error.get("code") != "SEQUENCE-PLAN-REFINE-FAILED":
+            raise
+        print_func("Refinement response failed the sequence-plan schema; retrying once.")
+        refine_result = refine_sequence_plan(
+            sequence_plan_text=read_text_file(result["sequence_plan_path"]),
+            transcript_text=read_text_file(transcript_path),
+            xml_text=read_text_file(xml_path),
+            output_dir=refinement_dir,
+            instruction=instruction,
+            option_id=args.option_id,
+            sequence_plan_path=result["sequence_plan_path"],
+            model=model,
+            host=args.host,
+            timeout=args.timeout,
+            thinking_mode=args.thinking_mode,
+            max_bite_duration_seconds=max_bite_duration,
+            max_total_duration_seconds=max_total_duration,
+            require_changed_selected_cuts=require_changed,
+            refinement_retries=args.refinement_retries,
+        )
+
+    print_func(f"Refined XML: {os.path.abspath(refine_result['output_path'])}")
+    print_func(f"Refined sequence plan: {os.path.abspath(refine_result['revision_path'])}")
+    return {"action": "refine", "result": result, "refinement": refine_result}
+
+
 def main():
     logging.basicConfig(
         level=logging.INFO,
@@ -2465,6 +2606,17 @@ def main():
     print("  AI-Powered Soundbite Selector for Premiere Pro")
     print("=" * 60)
     print()
+
+    if args.guided:
+        try:
+            run_guided_flow(args)
+        except BiteBuilderError as exc:
+            logger.error("bitebuilder_error=%s", format_error_for_log(exc.error))
+            print(f"ERROR [{exc.error.get('code')}]: {exc.error.get('message')}", file=sys.stderr)
+            print(f"Expected format: {exc.error.get('expected_input_format')}", file=sys.stderr)
+            print(f"Fix this: {exc.error.get('next_action')}", file=sys.stderr)
+            sys.exit(1)
+        return
 
     if args.sequence_plan:
         try:
@@ -2619,11 +2771,11 @@ Examples:
     )
 
     parser.add_argument(
-        '--transcript', required=True,
+        '--transcript', required=False,
         help='Path to timecoded transcript .txt file'
     )
     parser.add_argument(
-        '--xml', required=True,
+        '--xml', required=False,
         help='Path to Premiere Pro XML export (provides source media metadata)'
     )
     parser.add_argument(
@@ -2649,6 +2801,11 @@ Examples:
     parser.add_argument(
         '--timeout', type=int, default=DEFAULT_TIMEOUT,
         help=f'LLM request timeout in seconds (default: {DEFAULT_TIMEOUT})'
+    )
+    parser.add_argument(
+        '--guided',
+        action='store_true',
+        help='Prompt through first-pass generation and one optional refinement pass'
     )
     parser.add_argument(
         '--thinking-mode',
@@ -2691,8 +2848,18 @@ Examples:
     )
 
     args = parser.parse_args()
-    if not args.sequence_plan and not args.brief:
-        parser.error('--brief is required unless --sequence-plan is provided')
+    if not args.guided and not args.sequence_plan:
+        missing = []
+        if not args.transcript:
+            missing.append('--transcript')
+        if not args.xml:
+            missing.append('--xml')
+        if not args.brief:
+            missing.append('--brief')
+        if missing:
+            parser.error(f"the following arguments are required: {', '.join(missing)}")
+    if args.sequence_plan and (not args.transcript or not args.xml):
+        parser.error('--transcript and --xml are required with --sequence-plan')
     return args
 
 

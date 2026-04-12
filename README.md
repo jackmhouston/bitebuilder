@@ -72,9 +72,10 @@ Deliverables:
 
 ## Run Locally
 
-Canonical local entrypoint for the fundamentals track:
+Canonical local entrypoints for the fundamentals track:
 
-- CLI: `.venv/bin/python bitebuilder.py --help`
+- CLI help: `.venv/bin/python bitebuilder.py --help`
+- Guided CLI: `.venv/bin/python bitebuilder.py --guided`
 
 Inactive/low-priority UI entrypoint retained for reference:
 
