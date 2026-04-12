@@ -297,6 +297,61 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(sequence_plan["options"][0]["bites"][0]["segment_index"], 0)
             self.assertTrue(Path(tmpdir, result["output_files"][0]["filename"]).exists())
 
+    def test_run_pipeline_uses_valid_segment_index_over_bad_model_timecodes(self):
+        mocked_response = {
+            "selection_status": "ok",
+            "options": [
+                {
+                    "name": "Option 1",
+                    "description": "A grounded cut.",
+                    "estimated_duration_seconds": 2.0,
+                    "cuts": [
+                        {
+                            "segment_index": 0,
+                            "tc_in": "00:00:00:01",
+                            "tc_out": "00:00:02:01",
+                            "confidence": 0.9,
+                            "purpose": "hook",
+                        }
+                    ],
+                }
+            ],
+        }
+        mocked_debug = {
+            "editorial_direction_prompt": "",
+            "editorial_direction": "",
+            "editorial_direction_raw": "",
+            "accepted_plan": {},
+            "accepted_plan_text": "",
+            "candidate_shortlist": [],
+            "generation_prompt": "prompt",
+            "attempts": [],
+            "selection_retry": {"attempted": False, "errors": [], "parse_or_validation_error": False},
+            "selection_warnings": [],
+            "used_fallback": False,
+            "run_metadata": {},
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(bitebuilder, "ensure_ollama_ready", return_value=("http://127.0.0.1:11434", ["qwen3:8b"])):
+                with patch.object(
+                    bitebuilder,
+                    "generate_edit_options",
+                    return_value=(mocked_response, [], False, {"00:00:00:00", "00:00:02:00"}, {"minimum_seconds": None, "maximum_seconds": None}, mocked_debug),
+                ):
+                    result = bitebuilder.run_pipeline(
+                        transcript_text=TRANSCRIPT_TEXT,
+                        xml_text=XML_TEXT,
+                        brief="Create a short highlight cut with a strong opening.",
+                        output_dir=tmpdir,
+                    )
+
+            cut = result["response"]["options"][0]["cuts"][0]
+            self.assertEqual(cut["segment_index"], 0)
+            self.assertEqual(cut["tc_in"], "00:00:00:00")
+            self.assertEqual(cut["tc_out"], "00:00:02:00")
+
+
     def test_run_pipeline_rejects_invented_timecode_even_with_segment_index(self):
         mocked_response = {
             "selection_status": "ok",

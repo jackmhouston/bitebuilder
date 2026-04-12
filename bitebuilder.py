@@ -654,6 +654,39 @@ def repair_response_segment_indexes_from_timecodes(response: dict, segments) -> 
     return repaired
 
 
+def repair_response_timecodes_from_segment_indexes(response: dict, segments) -> dict:
+    """Return a copy with timecodes repaired from valid transcript segment indexes."""
+    repaired = json.loads(json.dumps(response))
+    for option in repaired.get("options", []) or []:
+        for cut in option.get("cuts", []) or []:
+            segment_index = normalize_segment_index(cut.get("segment_index"))
+            if segment_index is None or not (0 <= segment_index < len(segments)):
+                continue
+            segment = segments[segment_index]
+            cut["segment_index"] = segment_index
+            cut["tc_in"] = segment.tc_in
+            cut["tc_out"] = segment.tc_out
+            cut.setdefault("speaker", segment.speaker)
+    return repaired
+
+
+def repair_response_timecodes_from_candidate_indexes(response: dict, candidates: list[dict]) -> dict:
+    """Return a copy with timecodes repaired from valid candidate segment indexes."""
+    repaired = json.loads(json.dumps(response))
+    candidate_map = {candidate["segment_index"]: candidate for candidate in candidates}
+    for option in repaired.get("options", []) or []:
+        for cut in option.get("cuts", []) or []:
+            segment_index = normalize_segment_index(cut.get("segment_index"))
+            candidate = candidate_map.get(segment_index)
+            if not candidate:
+                continue
+            cut["segment_index"] = segment_index
+            cut["tc_in"] = candidate["tc_in"]
+            cut["tc_out"] = candidate["tc_out"]
+            cut.setdefault("speaker", candidate.get("speaker", ""))
+    return repaired
+
+
 def collect_candidate_validation_errors(
     response: dict,
     valid_candidate_indexes: set[int],
@@ -774,10 +807,26 @@ def hydrate_model_response(response: dict, candidates: list[dict], segments, sou
             ]
 
         for cut_index, cut in enumerate(iterable, start=1):
+            segment_index = normalize_segment_index(cut.get("segment_index"))
+            candidate = candidate_map.get(segment_index)
+            if candidate:
+                segment = segments[segment_index]
+                hydrated_cuts.append({
+                    "order": cut.get("order", cut_index),
+                    "segment_index": segment_index,
+                    "tc_in": candidate["tc_in"],
+                    "tc_out": candidate["tc_out"],
+                    "confidence": cut.get("confidence", 0.0),
+                    "speaker": candidate["speaker"],
+                    "purpose": cut.get("purpose") or candidate["roles"][0],
+                    "dialogue_summary": cut.get("dialogue_summary") or segment.text[:160],
+                })
+                continue
+
             if "tc_in" in cut and "tc_out" in cut:
                 hydrated_cuts.append({
                     "order": cut.get("order", cut_index),
-                    "segment_index": normalize_segment_index(cut.get("segment_index")),
+                    "segment_index": segment_index,
                     "tc_in": cut["tc_in"],
                     "tc_out": cut["tc_out"],
                     "speaker": cut.get("speaker", ""),
@@ -787,21 +836,6 @@ def hydrate_model_response(response: dict, candidates: list[dict], segments, sou
                 })
                 continue
 
-            segment_index = normalize_segment_index(cut.get("segment_index"))
-            candidate = candidate_map.get(segment_index)
-            if not candidate:
-                continue
-            segment = segments[segment_index]
-            hydrated_cuts.append({
-                "order": cut.get("order", cut_index),
-                "segment_index": segment_index,
-                "tc_in": candidate["tc_in"],
-                "tc_out": candidate["tc_out"],
-                "confidence": cut.get("confidence", 0.0),
-                "speaker": candidate["speaker"],
-                "purpose": cut.get("purpose") or candidate["roles"][0],
-                "dialogue_summary": cut.get("dialogue_summary") or segment.text[:160],
-            })
 
         if not hydrated_cuts:
             continue
@@ -1606,6 +1640,7 @@ def generate_edit_options(
                     f"Model output must be a JSON object, got {type(raw_response).__name__}."
                 )
             repaired_response = repair_response_segment_indexes_from_timecodes(raw_response, segments)
+            repaired_response = repair_response_timecodes_from_candidate_indexes(repaired_response, candidate_shortlist)
             candidate_errors = collect_candidate_validation_errors(
                 response=repaired_response,
                 valid_candidate_indexes=valid_candidate_indexes,
@@ -2364,6 +2399,13 @@ def run_pipeline(
             progress_callback=progress_callback,
         )
         response = repair_response_segment_indexes_from_timecodes(response, segments)
+        response = repair_response_timecodes_from_segment_indexes(response, segments)
+        response = hydrate_model_response(
+            response,
+            debug_artifacts.get("candidate_shortlist", []),
+            segments,
+            source,
+        )
         debug_artifacts["run_metadata"] = run_metadata
         if response.get("selection_status") == "ok" and validation_errors:
             selection_error_kind = "model_output_validation"
