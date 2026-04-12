@@ -2545,17 +2545,16 @@ def summarize_sequence_plan(plan: SequencePlan, option_id: str | None = None) ->
     if option.estimated_duration_seconds is not None:
         lines.append(f"Estimated duration: {option.estimated_duration_seconds}s")
     for order, bite in enumerate(option.bites, start=1):
-        summary = bite.dialogue_summary or bite.text or ""
-        if len(summary) > 120:
-            summary = summary[:117].rstrip() + "..."
         lines.append(
             f"{order}. [{bite.status}] segment {bite.segment_index} "
             f"{bite.tc_in} - {bite.tc_out}"
             + (f" | {bite.purpose}" if bite.purpose else "")
             + (f" | {bite.speaker}" if bite.speaker else "")
         )
-        if summary:
-            lines.append(f"   {summary}")
+        if bite.dialogue_summary:
+            lines.append(f"   Summary: {bite.dialogue_summary}")
+        if bite.text:
+            lines.append(f"   Transcript: {bite.text}")
     return "\n".join(lines)
 
 
