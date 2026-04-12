@@ -27,6 +27,7 @@ from parser.transcript import TranscriptValidationError
 from parser.premiere_xml import parse_premiere_xml_string
 from generator.xmeml import generate_sequence, build_deterministic_sequence_id
 from generator.timecode import estimate_duration_seconds
+from generator.sequence_plan import build_sequence_plan
 from llm.prompts import (
     SYSTEM_PROMPT,
     EDITORIAL_DIRECTION_SYSTEM_PROMPT,
@@ -1756,7 +1757,75 @@ def write_debug_artifacts(output_dir: str, debug_artifacts: dict | None) -> dict
     return paths
 
 
-def write_output_files(response: dict, source, output_dir: str, debug_artifacts: dict | None = None) -> tuple[list[dict], str, dict]:
+def _build_sequence_plan_artifact(
+    response: dict,
+    segments,
+    source,
+    brief: str | None,
+    project_context: str | None,
+    run_metadata: dict | None,
+) -> dict | None:
+    """Adapt a validated model response into a JSON-safe sequence-plan artifact."""
+    if response.get("selection_status") != "ok":
+        return None
+
+    segment_lookup = {index: segment for index, segment in enumerate(segments)}
+    plan_options = []
+    for option_index, option in enumerate(response.get("options", []), start=1):
+        bites = []
+        for cut in option.get("cuts", []):
+            segment_index = cut.get("segment_index")
+            segment = segment_lookup.get(segment_index)
+            bite = {
+                "segment_index": segment_index,
+                "tc_in": cut.get("tc_in"),
+                "tc_out": cut.get("tc_out"),
+                "speaker": cut.get("speaker") or (segment.speaker if segment else None),
+                "text": segment.text if segment else None,
+                "dialogue_summary": cut.get("dialogue_summary"),
+                "purpose": cut.get("purpose"),
+                "confidence": cut.get("confidence"),
+                "rationale": cut.get("rationale") or cut.get("reason"),
+                "source_action": "llm_first_pass",
+            }
+            bites.append({key: value for key, value in bite.items() if value is not None})
+        plan_options.append({
+            "option_id": f"option-{option_index}",
+            "name": option.get("name"),
+            "description": option.get("description"),
+            "estimated_duration_seconds": option.get("estimated_duration_seconds"),
+            "bites": bites,
+        })
+
+    plan = build_sequence_plan(
+        project_context=project_context,
+        goal=brief,
+        speaker_names=(run_metadata or {}).get("speaker_names") or {},
+        source={
+            "transcript": (run_metadata or {}).get("input_descriptors", {}).get("transcript", {}),
+            "premiere_xml": (run_metadata or {}).get("input_descriptors", {}).get("premiere_xml", {}),
+            "media": source.to_dict() if hasattr(source, "to_dict") else {},
+        },
+        revision_log=[{
+            "revision": 1,
+            "action": "llm_first_pass",
+            "summary": "Initial sequence plan generated from validated LLM response.",
+        }],
+        transcript_segments=segments,
+        options=plan_options,
+    )
+    return plan.to_dict()
+
+
+def write_output_files(
+    response: dict,
+    source,
+    output_dir: str,
+    debug_artifacts: dict | None = None,
+    segments=None,
+    brief: str | None = None,
+    project_context: str | None = None,
+) -> tuple[list[dict], str, dict, str | None]:
     """Write XML sequences and the raw LLM response to disk."""
     os.makedirs(output_dir, exist_ok=True)
     generated_files = []
@@ -1764,11 +1833,25 @@ def write_output_files(response: dict, source, output_dir: str, debug_artifacts:
     with open(debug_path, "w", encoding="utf-8") as handle:
         json.dump(response, handle, indent=2)
     debug_files = write_debug_artifacts(output_dir, debug_artifacts)
+    run_metadata = (debug_artifacts or {}).get("run_metadata")
+    sequence_plan_path = None
+    if response.get("selection_status") == "ok" and segments is not None:
+        sequence_plan = _build_sequence_plan_artifact(
+            response,
+            segments,
+            source,
+            brief,
+            project_context,
+            run_metadata,
+        )
+        if sequence_plan is not None:
+            sequence_plan_path = os.path.join(output_dir, "_sequence_plan.json")
+            with open(sequence_plan_path, "w", encoding="utf-8") as handle:
+                json.dump(sequence_plan, handle, indent=2)
+            debug_files["sequence_plan"] = sequence_plan_path
 
     if response.get("selection_status") == "no_candidates":
-        return [], debug_path, debug_files
-
-    run_metadata = (debug_artifacts or {}).get("run_metadata")
+        return [], debug_path, debug_files, sequence_plan_path
     for index, option in enumerate(response.get("options", [])):
         opt_name = option.get("name", f"Option {index + 1}")
         opt_cuts = option.get("cuts", [])
@@ -1816,6 +1899,7 @@ def write_output_files(response: dict, source, output_dir: str, debug_artifacts:
             "cut_count": len(gen_cuts),
             "actual_duration_seconds": actual_dur,
             "estimated_duration_seconds": option.get("estimated_duration_seconds", 0),
+            "sequence_plan_option_id": f"option-{index + 1}" if sequence_plan_path else None,
         })
 
     if not generated_files:
@@ -1824,7 +1908,7 @@ def write_output_files(response: dict, source, output_dir: str, debug_artifacts:
             f"{os.path.abspath(debug_path)}"
         )
 
-    return generated_files, debug_path, debug_files
+    return generated_files, debug_path, debug_files, sequence_plan_path
 
 
 def run_pipeline(
@@ -2029,11 +2113,14 @@ def run_pipeline(
         progress_callback("Writing output files.")
     try:
         progress["output_started"] = True
-        output_files, debug_path, debug_files = write_output_files(
+        output_files, debug_path, debug_files, sequence_plan_path = write_output_files(
             response,
             source,
             output_dir,
             debug_artifacts=debug_artifacts,
+            segments=segments,
+            brief=validated_brief,
+            project_context=project_context,
         )
     except Exception as exc:
         error = build_validation_error(
@@ -2074,6 +2161,7 @@ def run_pipeline(
         "output_files": output_files,
         "debug_path": debug_path,
         "debug_files": debug_files,
+        "sequence_plan_path": sequence_plan_path,
         "debug_artifacts": debug_artifacts,
         "progress": progress,
         "brief": validated_brief,
