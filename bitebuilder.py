@@ -36,6 +36,10 @@ from llm.prompts import (
     validate_llm_response,
     build_retry_prompt,
 )
+from llm.sequence_plan_refinement import (
+    build_sequence_plan_refinement_prompt,
+    validate_refined_sequence_plan,
+)
 from llm.ollama_client import (
     DEFAULT_HOST,
     DEFAULT_MODEL,
@@ -2015,6 +2019,109 @@ def render_sequence_plan(
     }
 
 
+def _next_sequence_plan_revision(plan_payload: dict) -> int:
+    revisions = [
+        entry.get("revision")
+        for entry in plan_payload.get("revision_log", [])
+        if isinstance(entry, dict) and isinstance(entry.get("revision"), int)
+    ]
+    return (max(revisions) if revisions else 1) + 1
+
+
+def refine_sequence_plan(
+    *,
+    sequence_plan_text: str,
+    transcript_text: str,
+    xml_text: str,
+    output_dir: str,
+    instruction: str,
+    option_id: str | None = None,
+    sequence_plan_path: str | None = None,
+    model: str = DEFAULT_MODEL,
+    host: str = DEFAULT_HOST,
+    timeout: int = DEFAULT_TIMEOUT,
+    thinking_mode: str = DEFAULT_THINKING_MODE,
+) -> dict:
+    """Refine a saved sequence plan with the configured Ollama model and render XML."""
+    source = parse_premiere_xml_safe(xml_text)
+    try:
+        segments = parse_transcript(
+            transcript_text,
+            strict=True,
+            timebase=source.timebase,
+            ntsc=source.ntsc,
+        )
+    except TranscriptValidationError as exc:
+        raise build_transcript_timecode_error(exc.errors)
+
+    try:
+        original_payload = json.loads(sequence_plan_text)
+    except json.JSONDecodeError as exc:
+        raise BiteBuilderError(build_validation_error(
+            code="SEQUENCE-PLAN-JSON-INVALID",
+            error_type="invalid_sequence_plan",
+            message="Sequence plan JSON is invalid.",
+            expected_input_format="A valid _sequence_plan.json file.",
+            next_action="Pass a valid sequence plan JSON artifact and retry.",
+            stage="sequence_plan",
+            recoverable=True,
+            details={"cause": str(exc)},
+        )) from exc
+
+    try:
+        original_plan = SequencePlan.from_dict(original_payload, transcript_segments=segments)
+        target_option = original_plan.option(option_id)
+        target_option_id = target_option.option_id
+        prompt = build_sequence_plan_refinement_prompt(
+            current_plan=original_payload,
+            transcript_segments=segments,
+            instruction=instruction,
+            target_option_id=target_option_id,
+        )
+        refined_payload = ollama_generate(
+            system_prompt="Return only valid JSON for a BiteBuilder sequence_plan.v1 refinement.",
+            user_prompt=prompt,
+            model=model,
+            host=host,
+            timeout=timeout,
+            thinking_mode=thinking_mode,
+        )
+        refined_plan = validate_refined_sequence_plan(refined_payload, transcript_segments=segments)
+        refined_cuts = refined_plan.to_cuts(target_option_id)
+        if not refined_cuts:
+            raise ValueError(f"Refined option {target_option_id!r} has no selected bites to render.")
+    except Exception as exc:
+        raise BiteBuilderError(build_validation_error(
+            code="SEQUENCE-PLAN-REFINE-FAILED",
+            error_type="runtime_model_output",
+            message="Sequence plan refinement failed validation.",
+            expected_input_format="A complete valid sequence_plan.v1 JSON object using exact transcript segments.",
+            next_action="Revise the refinement instruction or retry with a model response that follows the sequence-plan contract.",
+            stage="sequence_plan_refinement",
+            recoverable=True,
+            details={"cause": str(exc)},
+        )) from exc
+
+    os.makedirs(output_dir, exist_ok=True)
+    revision = _next_sequence_plan_revision(original_payload)
+    revision_path = os.path.join(output_dir, f"_sequence_plan_revision_{revision}.json")
+    refined_text = json.dumps(refined_plan.to_dict(), indent=2)
+    with open(revision_path, "w", encoding="utf-8") as handle:
+        handle.write(refined_text)
+
+    render_result = render_sequence_plan(
+        sequence_plan_text=refined_text,
+        transcript_text=transcript_text,
+        xml_text=xml_text,
+        output_dir=output_dir,
+        option_id=target_option_id,
+        sequence_plan_path=revision_path,
+    )
+    render_result["revision_path"] = revision_path
+    render_result["revision"] = revision
+    return render_result
+
+
 def run_pipeline(
     transcript_text: str,
     xml_text: str,
@@ -2290,14 +2397,29 @@ def main():
 
     if args.sequence_plan:
         try:
-            result = render_sequence_plan(
-                sequence_plan_text=read_text_file(args.sequence_plan),
-                transcript_text=read_text_file(args.transcript),
-                xml_text=read_text_file(args.xml),
-                output_dir=args.output,
-                option_id=args.option_id,
-                sequence_plan_path=args.sequence_plan,
-            )
+            if args.refine_instruction:
+                result = refine_sequence_plan(
+                    sequence_plan_text=read_text_file(args.sequence_plan),
+                    transcript_text=read_text_file(args.transcript),
+                    xml_text=read_text_file(args.xml),
+                    output_dir=args.output,
+                    instruction=args.refine_instruction,
+                    option_id=args.option_id,
+                    sequence_plan_path=args.sequence_plan,
+                    model=args.model,
+                    host=args.host,
+                    timeout=args.timeout,
+                    thinking_mode=args.thinking_mode,
+                )
+            else:
+                result = render_sequence_plan(
+                    sequence_plan_text=read_text_file(args.sequence_plan),
+                    transcript_text=read_text_file(args.transcript),
+                    xml_text=read_text_file(args.xml),
+                    output_dir=args.output,
+                    option_id=args.option_id,
+                    sequence_plan_path=args.sequence_plan,
+                )
         except BiteBuilderError as exc:
             logger.error("bitebuilder_error=%s", format_error_for_log(exc.error))
             print(f"ERROR [{exc.error.get('code')}]: {exc.error.get('message')}", file=sys.stderr)
@@ -2317,6 +2439,8 @@ def main():
         print(f"Rate: {source.actual_fps:.3f}fps | Resolution: {source.width}x{source.height}")
         print(f"Generated XML: {os.path.abspath(result['output_path'])}")
         print(f"Render metadata: {os.path.abspath(result['metadata_path'])}")
+        if result.get("revision_path"):
+            print(f"Refined sequence plan: {os.path.abspath(result['revision_path'])}")
         print(f"Cuts: {len(result['cuts'])}")
         return
 
@@ -2463,7 +2587,11 @@ Examples:
     )
     parser.add_argument(
         '--option-id',
-        help='Sequence-plan option id to render (defaults to first option)'
+        help='Sequence-plan option id to render/refine (defaults to first option)'
+    )
+    parser.add_argument(
+        '--refine-instruction',
+        help='Instruction for revising an existing sequence plan with the configured model'
     )
 
     args = parser.parse_args()
