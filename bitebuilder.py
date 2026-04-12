@@ -3205,6 +3205,25 @@ def main():
     print("=" * 60)
     print()
 
+    if args.tui:
+        try:
+            from bitebuilder_tui import run_tui
+
+            run_tui(args, api=sys.modules[__name__])
+        except BiteBuilderError as exc:
+            logger.error("bitebuilder_error=%s", format_error_for_log(exc.error))
+            print(f"ERROR [{exc.error.get('code')}]: {exc.error.get('message')}", file=sys.stderr)
+            print(f"Expected format: {exc.error.get('expected_input_format')}", file=sys.stderr)
+            print(f"Fix this: {exc.error.get('next_action')}", file=sys.stderr)
+            sys.exit(1)
+        except Exception as exc:
+            logger.exception("Unexpected TUI error.")
+            print("ERROR [TUI-RUNTIME-FAILED]: Terminal UI failed.", file=sys.stderr)
+            print("Fix this: Ensure the command is running in an interactive terminal and retry.", file=sys.stderr)
+            print(f"Details: {exc}", file=sys.stderr)
+            sys.exit(1)
+        return
+
     if args.guided:
         try:
             run_guided_flow(args)
@@ -3468,6 +3487,11 @@ Examples:
         help='Prompt through first-pass generation and an optional persistent assistant build loop'
     )
     parser.add_argument(
+        '--tui',
+        action='store_true',
+        help='Open the no-dependency terminal UI for selecting inputs and building a sequence plan'
+    )
+    parser.add_argument(
         '--thinking-mode',
         choices=['auto', 'on', 'off'],
         default=DEFAULT_THINKING_MODE,
@@ -3517,7 +3541,7 @@ Examples:
         parser.error('--build requires --sequence-plan')
     if args.build and args.refine_instruction:
         parser.error('--build cannot be combined with --refine-instruction')
-    if not args.guided and not args.sequence_plan:
+    if not args.guided and not args.tui and not args.sequence_plan:
         missing = []
         if not args.transcript:
             missing.append('--transcript')
@@ -3528,7 +3552,8 @@ Examples:
         if missing:
             parser.error(f"the following arguments are required: {', '.join(missing)}")
     if args.sequence_plan and (not args.transcript or not args.xml):
-        parser.error('--transcript and --xml are required with --sequence-plan')
+        if not args.tui:
+            parser.error('--transcript and --xml are required with --sequence-plan')
     return args
 
 

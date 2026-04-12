@@ -268,6 +268,20 @@ class GuidedCliFlowTests(unittest.TestCase):
         self.assertIsNone(parsed.xml)
         self.assertIsNone(parsed.brief)
 
+    def test_parse_args_allows_tui_without_required_paths(self):
+        with patch("sys.argv", ["bitebuilder.py", "--tui"]):
+            parsed = bitebuilder.parse_args()
+        self.assertTrue(parsed.tui)
+        self.assertIsNone(parsed.transcript)
+        self.assertIsNone(parsed.xml)
+        self.assertIsNone(parsed.brief)
+
+    def test_tui_allows_sequence_plan_without_paths_for_picker(self):
+        with patch("sys.argv", ["bitebuilder.py", "--tui", "--sequence-plan", "plan.json"]):
+            parsed = bitebuilder.parse_args()
+        self.assertTrue(parsed.tui)
+        self.assertEqual(parsed.sequence_plan, "plan.json")
+
     def test_non_guided_still_requires_transcript_xml_and_brief(self):
         with patch("sys.argv", ["bitebuilder.py", "--transcript", "t.txt", "--xml", "x.xml"]):
             with contextlib.redirect_stderr(io.StringIO()):
