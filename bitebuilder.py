@@ -637,6 +637,23 @@ def format_candidate_pool(candidates: list[dict]) -> str:
     return "\n\n".join(lines)
 
 
+def repair_response_segment_indexes_from_timecodes(response: dict, segments) -> dict:
+    """Return a copy with segment_index repaired from exact transcript timecode pairs."""
+    repaired = json.loads(json.dumps(response))
+    pair_to_indexes: dict[tuple[str, str], list[int]] = {}
+    for index, segment in enumerate(segments):
+        pair_to_indexes.setdefault((segment.tc_in, segment.tc_out), []).append(index)
+
+    for option in repaired.get("options", []) or []:
+        for cut in option.get("cuts", []) or []:
+            if "tc_in" not in cut or "tc_out" not in cut:
+                continue
+            indexes = pair_to_indexes.get((cut["tc_in"], cut["tc_out"]))
+            if indexes and len(indexes) == 1:
+                cut["segment_index"] = indexes[0]
+    return repaired
+
+
 def collect_candidate_validation_errors(
     response: dict,
     valid_candidate_indexes: set[int],
@@ -1588,13 +1605,14 @@ def generate_edit_options(
                 raise TypeError(
                     f"Model output must be a JSON object, got {type(raw_response).__name__}."
                 )
+            repaired_response = repair_response_segment_indexes_from_timecodes(raw_response, segments)
             candidate_errors = collect_candidate_validation_errors(
-                response=raw_response,
+                response=repaired_response,
                 valid_candidate_indexes=valid_candidate_indexes,
                 valid_candidate_timecodes=valid_candidate_timecodes,
                 expected_options=num_options,
             )
-            response = hydrate_model_response(raw_response, candidate_shortlist, segments, source)
+            response = hydrate_model_response(repaired_response, candidate_shortlist, segments, source)
             optimization_notes = []
             if not candidate_errors:
                 response, optimization_notes = optimize_response_durations(
@@ -2345,6 +2363,7 @@ def run_pipeline(
             thinking_mode=thinking_mode,
             progress_callback=progress_callback,
         )
+        response = repair_response_segment_indexes_from_timecodes(response, segments)
         debug_artifacts["run_metadata"] = run_metadata
         if response.get("selection_status") == "ok" and validation_errors:
             selection_error_kind = "model_output_validation"
