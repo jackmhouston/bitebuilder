@@ -27,7 +27,7 @@ from parser.transcript import TranscriptValidationError
 from parser.premiere_xml import parse_premiere_xml_string
 from generator.xmeml import generate_sequence, build_deterministic_sequence_id
 from generator.timecode import estimate_duration_seconds
-from generator.sequence_plan import SequencePlan, build_sequence_plan
+from generator.sequence_plan import SequencePlan, SequencePlanValidationError, build_sequence_plan
 from generator.sequence_plan_constraints import evaluate_sequence_plan_constraints
 from llm.prompts import (
     SYSTEM_PROMPT,
@@ -39,6 +39,7 @@ from llm.prompts import (
 )
 from llm.sequence_plan_refinement import (
     build_sequence_plan_refinement_prompt,
+    SequencePlanRefinementError,
     validate_refined_sequence_plan,
 )
 from llm.ollama_client import (
@@ -2165,9 +2166,12 @@ def refine_sequence_plan(
         )) from exc
 
     constraint_feedback = None
+    schema_retries = 1
+    schema_failures = 0
+    constraint_failures = 0
     refined_plan = None
     refined_cuts = None
-    for attempt in range(refinement_retries + 1):
+    while True:
         prompt = build_sequence_plan_refinement_prompt(
             current_plan=original_payload,
             transcript_segments=segments,
@@ -2187,11 +2191,28 @@ def refine_sequence_plan(
                 timeout=timeout,
                 thinking_mode=thinking_mode,
             )
+        except Exception as exc:
+            raise BiteBuilderError(build_validation_error(
+                code="SEQUENCE-PLAN-REFINE-FAILED",
+                error_type="runtime_model_output",
+                message="Sequence plan refinement model call failed.",
+                expected_input_format="A reachable model that returns a complete valid sequence_plan.v1 JSON object.",
+                next_action="Verify the model is available and retry the refinement.",
+                stage="sequence_plan_refinement",
+                recoverable=True,
+                details={"cause": str(exc)},
+            )) from exc
+
+        try:
             refined_plan = validate_refined_sequence_plan(refined_payload, transcript_segments=segments)
             refined_cuts = refined_plan.to_cuts(target_option_id)
             if not refined_cuts:
-                raise ValueError(f"Refined option {target_option_id!r} has no selected bites to render.")
-        except Exception as exc:
+                raise SequencePlanRefinementError(f"Refined option {target_option_id!r} has no selected bites to render.")
+        except (SequencePlanRefinementError, SequencePlanValidationError) as exc:
+            if schema_failures < schema_retries:
+                schema_failures += 1
+                constraint_feedback = {"schema_error": str(exc)}
+                continue
             raise BiteBuilderError(build_validation_error(
                 code="SEQUENCE-PLAN-REFINE-FAILED",
                 error_type="runtime_model_output",
@@ -2220,7 +2241,7 @@ def refine_sequence_plan(
         if constraint_result.passes:
             break
         constraint_feedback = constraint_result.to_dict()
-        if attempt >= refinement_retries:
+        if constraint_failures >= refinement_retries:
             raise BiteBuilderError(build_validation_error(
                 code="SEQUENCE-PLAN-REFINE-CONSTRAINTS-FAILED",
                 error_type="runtime_model_output",
@@ -2231,6 +2252,7 @@ def refine_sequence_plan(
                 recoverable=True,
                 details={"constraint_result": constraint_feedback},
             ))
+        constraint_failures += 1
 
     os.makedirs(output_dir, exist_ok=True)
     revision = _next_sequence_plan_revision(original_payload)

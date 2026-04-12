@@ -200,6 +200,52 @@ class GemmaRefinementCliTests(unittest.TestCase):
             self.assertFalse(output_dir.exists())
 
 
+    def test_schema_failure_retries_once_inside_refinement_helper(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            plan_path = tmp / "_sequence_plan.json"
+            output_dir = tmp / "refined"
+            write_plan(plan_path)
+            revised = self._revised_plan(plan_path)
+
+            with patch.object(bitebuilder, "ollama_generate", side_effect=[{"options": []}, revised]) as generate:
+                result = bitebuilder.refine_sequence_plan(
+                    sequence_plan_text=plan_path.read_text(encoding="utf-8"),
+                    transcript_text=TRANSCRIPT_TEXT,
+                    xml_text=XML_TEXT,
+                    output_dir=str(output_dir),
+                    instruction="make it shorter",
+                )
+
+            self.assertEqual(generate.call_count, 2)
+            retry_prompt = generate.call_args_list[1].kwargs["user_prompt"]
+            self.assertIn("schema_error", retry_prompt)
+            self.assertIn("failed validation or editorial constraints", retry_prompt)
+            self.assertTrue(Path(result["revision_path"]).exists())
+
+    def test_model_call_failure_does_not_schema_retry(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            plan_path = tmp / "_sequence_plan.json"
+            output_dir = tmp / "refined"
+            write_plan(plan_path)
+
+            with patch.object(bitebuilder, "ollama_generate", side_effect=RuntimeError("model unavailable")) as generate:
+                with self.assertRaises(bitebuilder.BiteBuilderError) as ctx:
+                    bitebuilder.refine_sequence_plan(
+                        sequence_plan_text=plan_path.read_text(encoding="utf-8"),
+                        transcript_text=TRANSCRIPT_TEXT,
+                        xml_text=XML_TEXT,
+                        output_dir=str(output_dir),
+                        instruction="make it shorter",
+                    )
+
+            self.assertEqual(generate.call_count, 1)
+            self.assertEqual(ctx.exception.error["code"], "SEQUENCE-PLAN-REFINE-FAILED")
+            self.assertIn("model call failed", ctx.exception.error["message"])
+            self.assertFalse(output_dir.exists())
+
+
     def test_constraint_retry_succeeds_after_unchanged_first_response(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)

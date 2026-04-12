@@ -57,8 +57,8 @@ def build_sequence_plan_refinement_prompt(
     feedback_text = ""
     if constraint_feedback is not None:
         feedback_text = (
-            "\n\nPrevious refined plan failed editorial constraints. "
-            "Fix every violation in this JSON feedback:\n"
+            "\n\nPrevious refined plan failed validation or editorial constraints. "
+            "Fix every issue in this JSON feedback:\n"
             f"{json.dumps(dict(constraint_feedback), indent=2, sort_keys=True)}"
         )
 
