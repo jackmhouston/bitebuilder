@@ -27,7 +27,13 @@ from parser.transcript import TranscriptValidationError
 from parser.premiere_xml import parse_premiere_xml_string
 from generator.xmeml import generate_sequence, build_deterministic_sequence_id
 from generator.timecode import estimate_duration_seconds
-from generator.sequence_plan import SequencePlan, SequencePlanValidationError, build_sequence_plan
+from generator.sequence_plan import (
+    REMOVED_STATUS,
+    SELECTED_STATUS,
+    SequencePlan,
+    SequencePlanValidationError,
+    build_sequence_plan,
+)
 from generator.sequence_plan_constraints import evaluate_sequence_plan_constraints
 from llm.prompts import (
     SYSTEM_PROMPT,
@@ -1916,7 +1922,11 @@ def write_output_files(
             sequence_plan_summary_path = os.path.join(output_dir, "_sequence_plan_summary.txt")
             sequence_plan_obj = SequencePlan.from_dict(sequence_plan, transcript_segments=segments)
             with open(sequence_plan_summary_path, "w", encoding="utf-8") as handle:
-                handle.write(summarize_sequence_plan(sequence_plan_obj))
+                handle.write(summarize_sequence_plan(
+                    sequence_plan_obj,
+                    timebase=source.timebase,
+                    ntsc=source.ntsc,
+                ))
                 handle.write("\n")
             debug_files["sequence_plan_summary"] = sequence_plan_summary_path
 
@@ -2257,6 +2267,16 @@ def refine_sequence_plan(
     os.makedirs(output_dir, exist_ok=True)
     revision = _next_sequence_plan_revision(original_payload)
     revision_path = os.path.join(output_dir, f"_sequence_plan_revision_{revision}.json")
+    refined_payload = refined_plan.to_dict()
+    refined_payload.setdefault("revision_log", [])
+    if not any(entry.get("revision") == revision for entry in refined_payload["revision_log"] if isinstance(entry, dict)):
+        refined_payload["revision_log"].append({
+            "revision": revision,
+            "action": "model_refinement",
+            "summary": instruction,
+            "timestamp": _iso_timestamp(),
+        })
+    refined_plan = SequencePlan.from_dict(refined_payload, transcript_segments=segments)
     refined_text = json.dumps(refined_plan.to_dict(), indent=2)
     with open(revision_path, "w", encoding="utf-8") as handle:
         handle.write(refined_text)
@@ -2560,24 +2580,478 @@ def _parse_optional_float(value: str) -> float | None:
     return float(value) if value else None
 
 
-def summarize_sequence_plan(plan: SequencePlan, option_id: str | None = None) -> str:
-    """Return a readable summary of the selected sequence-plan option."""
+def _sequence_plan_option_duration(option, *, timebase: int = 24, ntsc: bool = True) -> float:
+    return sum(
+        estimate_duration_seconds(bite.tc_in, bite.tc_out, timebase, ntsc)
+        for bite in option.selected_bites()
+    )
+
+
+def _bite_issue_flags(bite, duration_seconds: float) -> list[str]:
+    """Return lightweight editor-facing warnings for a selected bite."""
+    flags = []
+    text = (bite.text or "").strip()
+    lower = text.lower()
+    if duration_seconds > 24:
+        flags.append("long bite")
+    if text:
+        word_count = len(re.findall(r"\b[\w'-]+\b", text))
+        starts_like_fragment = lower.startswith((
+            "and ",
+            "but ",
+            "so ",
+            "because ",
+            "which ",
+            "that ",
+            "it ",
+            "they ",
+            "we ",
+        ))
+        lacks_sentence_end = text[-1] not in ".?!\"'"
+        if word_count <= 5 or starts_like_fragment or lacks_sentence_end:
+            flags.append("possible fragment")
+    return flags
+
+
+def summarize_sequence_plan(
+    plan: SequencePlan,
+    option_id: str | None = None,
+    *,
+    timebase: int = 24,
+    ntsc: bool = True,
+) -> str:
+    """Return an editor-readable transcript-backed summary of the selected option."""
     option = plan.option(option_id)
     lines = [f"Option {option.option_id}: {option.name or option.option_id}"]
+    total_duration = _sequence_plan_option_duration(option, timebase=timebase, ntsc=ntsc)
+    lines.append(f"Total selected duration: {total_duration:.1f}s")
     if option.estimated_duration_seconds is not None:
-        lines.append(f"Estimated duration: {option.estimated_duration_seconds}s")
+        lines.append(f"Model-estimated duration: {option.estimated_duration_seconds}s")
+    selected_order = 0
     for order, bite in enumerate(option.bites, start=1):
+        selected_label = ""
+        if bite.status == SELECTED_STATUS:
+            selected_order += 1
+            selected_label = f" | selected #{selected_order}"
+        duration = estimate_duration_seconds(bite.tc_in, bite.tc_out, timebase, ntsc)
         lines.append(
             f"{order}. [{bite.status}] segment {bite.segment_index} "
-            f"{bite.tc_in} - {bite.tc_out}"
+            f"{bite.tc_in} - {bite.tc_out} ({duration:.1f}s)"
             + (f" | {bite.purpose}" if bite.purpose else "")
             + (f" | {bite.speaker}" if bite.speaker else "")
+            + selected_label
         )
         if bite.dialogue_summary:
             lines.append(f"   Summary: {bite.dialogue_summary}")
         if bite.text:
-            lines.append(f"   Transcript: {bite.text}")
+            lines.append(f"   Spoken text: {bite.text}")
+        if bite.rationale:
+            lines.append(f"   Rationale: {bite.rationale}")
+        flags = _bite_issue_flags(bite, duration)
+        if flags:
+            lines.append(f"   Possible issues: {', '.join(flags)}")
     return "\n".join(lines)
+
+
+def _sequence_plan_payload_with_revision(
+    plan: SequencePlan,
+    *,
+    revision: int,
+    action: str,
+    summary: str,
+) -> dict:
+    payload = plan.to_dict()
+    payload.setdefault("revision_log", [])
+    payload["revision_log"].append({
+        "revision": revision,
+        "action": action,
+        "summary": summary,
+        "timestamp": _iso_timestamp(),
+    })
+    return payload
+
+
+def _selected_bite_raw_indexes(option_payload: dict) -> list[int]:
+    return [
+        index
+        for index, bite in enumerate(option_payload.get("bites", []))
+        if bite.get("status", SELECTED_STATUS) == SELECTED_STATUS
+    ]
+
+
+def _target_option_payload(plan_payload: dict, option_id: str | None) -> dict:
+    options = plan_payload.get("options") or []
+    if not options:
+        raise SequencePlanValidationError("sequence plan has no options")
+    if option_id is None:
+        return options[0]
+    for option in options:
+        if option.get("option_id") == option_id:
+            return option
+    raise SequencePlanValidationError(f"Unknown option_id {option_id!r}")
+
+
+def _next_editor_bite_id(option_payload: dict) -> str:
+    existing = {str(bite.get("bite_id")) for bite in option_payload.get("bites", []) if bite.get("bite_id")}
+    counter = 1
+    while True:
+        candidate = f"editor-bite-{counter:03d}"
+        if candidate not in existing:
+            return candidate
+        counter += 1
+
+
+def _refresh_option_duration(option_payload: dict, *, timebase: int, ntsc: bool) -> None:
+    duration = 0.0
+    for bite in option_payload.get("bites", []):
+        if bite.get("status", SELECTED_STATUS) != SELECTED_STATUS:
+            continue
+        duration += estimate_duration_seconds(bite["tc_in"], bite["tc_out"], timebase, ntsc)
+    option_payload["estimated_duration_seconds"] = round(duration, 1)
+
+
+def add_segment_to_sequence_plan(
+    plan: SequencePlan,
+    *,
+    transcript_segments,
+    segment_index: int,
+    option_id: str | None = None,
+    position: int | None = None,
+    timebase: int = 24,
+    ntsc: bool = True,
+) -> SequencePlan:
+    """Add an exact transcript segment to a selected sequence-plan option."""
+    if segment_index < 0 or segment_index >= len(transcript_segments):
+        raise SequencePlanValidationError(
+            f"segment_index {segment_index} is outside transcript bounds 0..{len(transcript_segments) - 1}"
+        )
+    payload = plan.to_dict()
+    option_payload = _target_option_payload(payload, option_id)
+    selected_indexes = _selected_bite_raw_indexes(option_payload)
+    if position is not None and (position < 1 or position > len(selected_indexes) + 1):
+        raise SequencePlanValidationError(f"position must be between 1 and {len(selected_indexes) + 1}")
+
+    segment = transcript_segments[segment_index]
+    new_bite = {
+        "bite_id": _next_editor_bite_id(option_payload),
+        "segment_index": segment_index,
+        "tc_in": segment.tc_in,
+        "tc_out": segment.tc_out,
+        "speaker": segment.speaker,
+        "text": segment.text,
+        "dialogue_summary": segment.text[:160],
+        "purpose": "EDITOR ADD",
+        "rationale": "Added during guided build workflow.",
+        "status": SELECTED_STATUS,
+        "source_action": "guided_add",
+    }
+    if position is None or position == len(selected_indexes) + 1:
+        option_payload.setdefault("bites", []).append(new_bite)
+    else:
+        option_payload.setdefault("bites", []).insert(selected_indexes[position - 1], new_bite)
+    _refresh_option_duration(option_payload, timebase=timebase, ntsc=ntsc)
+    return SequencePlan.from_dict(payload, transcript_segments=transcript_segments)
+
+
+def remove_selected_bite_from_sequence_plan(
+    plan: SequencePlan,
+    *,
+    transcript_segments,
+    selected_position: int,
+    option_id: str | None = None,
+    timebase: int = 24,
+    ntsc: bool = True,
+) -> SequencePlan:
+    """Mark a selected bite as removed by its one-based visible selected position."""
+    payload = plan.to_dict()
+    option_payload = _target_option_payload(payload, option_id)
+    selected_indexes = _selected_bite_raw_indexes(option_payload)
+    if selected_position < 1 or selected_position > len(selected_indexes):
+        raise SequencePlanValidationError(f"selected_position must be between 1 and {len(selected_indexes)}")
+    bite = option_payload["bites"][selected_indexes[selected_position - 1]]
+    bite["status"] = REMOVED_STATUS
+    bite["source_action"] = "guided_delete"
+    _refresh_option_duration(option_payload, timebase=timebase, ntsc=ntsc)
+    return SequencePlan.from_dict(payload, transcript_segments=transcript_segments)
+
+
+def move_selected_bite_in_sequence_plan(
+    plan: SequencePlan,
+    *,
+    transcript_segments,
+    from_position: int,
+    to_position: int,
+    option_id: str | None = None,
+    timebase: int = 24,
+    ntsc: bool = True,
+) -> SequencePlan:
+    """Move a selected bite using one-based visible selected positions."""
+    payload = plan.to_dict()
+    option_payload = _target_option_payload(payload, option_id)
+    selected_indexes = _selected_bite_raw_indexes(option_payload)
+    selected_count = len(selected_indexes)
+    if from_position < 1 or from_position > selected_count:
+        raise SequencePlanValidationError(f"from_position must be between 1 and {selected_count}")
+    if to_position < 1 or to_position > selected_count:
+        raise SequencePlanValidationError(f"to_position must be between 1 and {selected_count}")
+
+    bites = option_payload["bites"]
+    moving = bites.pop(selected_indexes[from_position - 1])
+    selected_after = _selected_bite_raw_indexes(option_payload)
+    if to_position > len(selected_after):
+        bites.append(moving)
+    else:
+        bites.insert(selected_after[to_position - 1], moving)
+    _refresh_option_duration(option_payload, timebase=timebase, ntsc=ntsc)
+    return SequencePlan.from_dict(payload, transcript_segments=transcript_segments)
+
+
+def _parse_optional_int(value: str) -> int | None:
+    value = (value or "").strip()
+    return int(value) if value else None
+
+
+def _format_transcript_excerpt(segments, *, start_index: int = 0, count: int = 12, query: str | None = None) -> str:
+    query_text = (query or "").strip().lower()
+    lines = []
+    matches = []
+    for index, segment in enumerate(segments):
+        if query_text and query_text not in segment.text.lower() and query_text not in segment.speaker.lower():
+            continue
+        matches.append((index, segment))
+    if not query_text:
+        matches = list(enumerate(segments))[start_index:start_index + count]
+    else:
+        matches = matches[:count]
+    for index, segment in matches:
+        lines.append(f"[{index}] {segment.tc_in} - {segment.tc_out} | {segment.speaker}\n    {segment.text}")
+    return "\n\n".join(lines) if lines else "No matching transcript segments."
+
+
+def _write_and_render_builder_plan(
+    *,
+    plan: SequencePlan,
+    transcript_text: str,
+    xml_text: str,
+    transcript_segments,
+    output_dir: str,
+    option_id: str | None,
+    source,
+    action: str,
+    summary: str,
+    current_plan_payload: dict,
+) -> tuple[dict, dict]:
+    os.makedirs(output_dir, exist_ok=True)
+    revision = _next_sequence_plan_revision(current_plan_payload)
+    payload = _sequence_plan_payload_with_revision(
+        plan,
+        revision=revision,
+        action=action,
+        summary=summary,
+    )
+    plan = SequencePlan.from_dict(payload, transcript_segments=transcript_segments)
+    revision_path = os.path.join(output_dir, f"_sequence_plan_revision_{revision}.json")
+    plan_text = json.dumps(plan.to_dict(), indent=2)
+    with open(revision_path, "w", encoding="utf-8") as handle:
+        handle.write(plan_text)
+    with open(os.path.join(output_dir, "_sequence_plan_summary.txt"), "w", encoding="utf-8") as handle:
+        handle.write(summarize_sequence_plan(plan, option_id, timebase=source.timebase, ntsc=source.ntsc))
+    render_result = render_sequence_plan(
+        sequence_plan_text=plan_text,
+        transcript_text=transcript_text,
+        xml_text=xml_text,
+        output_dir=output_dir,
+        option_id=option_id,
+        sequence_plan_path=revision_path,
+    )
+    render_result["revision_path"] = revision_path
+    render_result["revision"] = revision
+    return plan.to_dict(), render_result
+
+
+def run_guided_build_loop(
+    *,
+    initial_plan_payload: dict,
+    transcript_text: str,
+    xml_text: str,
+    transcript_segments,
+    output_dir: str,
+    option_id: str | None,
+    model: str,
+    host: str,
+    timeout: int,
+    thinking_mode: str,
+    max_bite_duration_seconds: float | None,
+    max_total_duration_seconds: float | None,
+    require_changed_selected_cuts: bool,
+    refinement_retries: int,
+    sequence_plan_path: str,
+    input_func=input,
+    print_func=print,
+) -> dict:
+    """Persistent CLI build loop for assistant refinements and direct editor edits."""
+    source = parse_premiere_xml_safe(xml_text)
+    builder_dir = os.path.join(output_dir, "builder-session")
+    current_payload = json.loads(json.dumps(initial_plan_payload))
+    current_plan_path = sequence_plan_path
+    current_render = None
+    os.makedirs(builder_dir, exist_ok=True)
+    print_func("\nBuild mode: keep iterating until the sequence reads correctly.")
+    print_func("Commands: view, assistant/refine, add, delete, move, search, transcript, accept, stop")
+
+    while True:
+        current_plan = SequencePlan.from_dict(current_payload, transcript_segments=transcript_segments)
+        print_func("\nCurrent sequence:")
+        print_func(summarize_sequence_plan(current_plan, option_id, timebase=source.timebase, ntsc=source.ntsc))
+        command = prompt_with_default(
+            "Build command [view/assistant/add/delete/move/search/transcript/accept/stop]",
+            "assistant",
+            input_func=input_func,
+        ).lower()
+        if command in {"accept", "a"}:
+            print_func(f"Accepted build. Current plan: {os.path.abspath(current_plan_path)}")
+            return {
+                "action": "build",
+                "status": "accept",
+                "plan_path": current_plan_path,
+                "render": current_render,
+                "plan": current_plan,
+            }
+        if command in {"stop", "s", "quit", "q"}:
+            print_func(f"Stopped build. Current plan: {os.path.abspath(current_plan_path)}")
+            return {
+                "action": "build",
+                "status": "stop",
+                "plan_path": current_plan_path,
+                "render": current_render,
+                "plan": current_plan,
+            }
+        if command in {"view", "v"}:
+            continue
+        if command in {"search", "find"}:
+            query = prompt_with_default("Search transcript for", "", input_func=input_func)
+            print_func(_format_transcript_excerpt(transcript_segments, query=query, count=12))
+            continue
+        if command in {"transcript", "t"}:
+            start = _parse_optional_int(prompt_with_default("Start segment index", "0", input_func=input_func)) or 0
+            count = _parse_optional_int(prompt_with_default("Segment count", "12", input_func=input_func)) or 12
+            print_func(_format_transcript_excerpt(transcript_segments, start_index=start, count=count))
+            continue
+
+        try:
+            if command in {"assistant", "refine", "r", "chat"}:
+                instruction = prompt_with_default("Assistant instruction", "make the narrative more cohesive", input_func=input_func)
+                current_render = refine_sequence_plan(
+                    sequence_plan_text=json.dumps(current_payload),
+                    transcript_text=transcript_text,
+                    xml_text=xml_text,
+                    output_dir=builder_dir,
+                    instruction=instruction,
+                    option_id=option_id,
+                    sequence_plan_path=current_plan_path,
+                    model=model,
+                    host=host,
+                    timeout=timeout,
+                    thinking_mode=thinking_mode,
+                    max_bite_duration_seconds=max_bite_duration_seconds,
+                    max_total_duration_seconds=max_total_duration_seconds,
+                    require_changed_selected_cuts=require_changed_selected_cuts,
+                    refinement_retries=refinement_retries,
+                )
+                current_plan_path = current_render["revision_path"]
+                current_payload = current_render["sequence_plan"].to_dict()
+                print_func(f"Assistant revision rendered: {os.path.abspath(current_render['output_path'])}")
+                continue
+
+            if command in {"add", "+"}:
+                segment_index = int(prompt_with_default("Transcript segment_index to add", None, input_func=input_func))
+                position = _parse_optional_int(prompt_with_default("Insert at selected bite position (blank=end)", None, input_func=input_func))
+                edited_plan = add_segment_to_sequence_plan(
+                    current_plan,
+                    transcript_segments=transcript_segments,
+                    segment_index=segment_index,
+                    option_id=option_id,
+                    position=position,
+                    timebase=source.timebase,
+                    ntsc=source.ntsc,
+                )
+                current_payload, current_render = _write_and_render_builder_plan(
+                    plan=edited_plan,
+                    transcript_text=transcript_text,
+                    xml_text=xml_text,
+                    transcript_segments=transcript_segments,
+                    output_dir=builder_dir,
+                    option_id=option_id,
+                    source=source,
+                    action="guided_add",
+                    summary=f"Added transcript segment {segment_index}.",
+                    current_plan_payload=current_payload,
+                )
+                current_plan_path = current_render["revision_path"]
+                print_func(f"Added segment and rendered XML: {os.path.abspath(current_render['output_path'])}")
+                continue
+
+            if command in {"delete", "remove", "d", "-"}:
+                selected_position = int(prompt_with_default("Selected bite number to delete", None, input_func=input_func))
+                edited_plan = remove_selected_bite_from_sequence_plan(
+                    current_plan,
+                    transcript_segments=transcript_segments,
+                    selected_position=selected_position,
+                    option_id=option_id,
+                    timebase=source.timebase,
+                    ntsc=source.ntsc,
+                )
+                current_payload, current_render = _write_and_render_builder_plan(
+                    plan=edited_plan,
+                    transcript_text=transcript_text,
+                    xml_text=xml_text,
+                    transcript_segments=transcript_segments,
+                    output_dir=builder_dir,
+                    option_id=option_id,
+                    source=source,
+                    action="guided_delete",
+                    summary=f"Removed selected bite {selected_position}.",
+                    current_plan_payload=current_payload,
+                )
+                current_plan_path = current_render["revision_path"]
+                print_func(f"Deleted bite and rendered XML: {os.path.abspath(current_render['output_path'])}")
+                continue
+
+            if command in {"move", "m"}:
+                from_position = int(prompt_with_default("Move selected bite number", None, input_func=input_func))
+                to_position = int(prompt_with_default("Move to selected position", None, input_func=input_func))
+                edited_plan = move_selected_bite_in_sequence_plan(
+                    current_plan,
+                    transcript_segments=transcript_segments,
+                    from_position=from_position,
+                    to_position=to_position,
+                    option_id=option_id,
+                    timebase=source.timebase,
+                    ntsc=source.ntsc,
+                )
+                current_payload, current_render = _write_and_render_builder_plan(
+                    plan=edited_plan,
+                    transcript_text=transcript_text,
+                    xml_text=xml_text,
+                    transcript_segments=transcript_segments,
+                    output_dir=builder_dir,
+                    option_id=option_id,
+                    source=source,
+                    action="guided_move",
+                    summary=f"Moved selected bite {from_position} to position {to_position}.",
+                    current_plan_payload=current_payload,
+                )
+                current_plan_path = current_render["revision_path"]
+                print_func(f"Moved bite and rendered XML: {os.path.abspath(current_render['output_path'])}")
+                continue
+        except (ValueError, SequencePlanValidationError, BiteBuilderError) as exc:
+            if isinstance(exc, BiteBuilderError):
+                print_func(f"Command failed: {exc.error.get('message')}")
+            else:
+                print_func(f"Command failed: {exc}")
+            continue
+
+        print_func("Unknown command. Use view, assistant, add, delete, move, search, transcript, accept, or stop.")
 
 
 def run_guided_flow(args, *, input_func=input, print_func=print) -> dict:
@@ -2608,19 +3082,25 @@ def run_guided_flow(args, *, input_func=input, print_func=print) -> dict:
     if result.get("sequence_plan_path"):
         plan_payload = json.loads(read_text_file(result["sequence_plan_path"]))
         plan = SequencePlan.from_dict(plan_payload, transcript_segments=result["segments"])
-        print_func(summarize_sequence_plan(plan, args.option_id))
+        source = result.get("source")
+        print_func(summarize_sequence_plan(
+            plan,
+            args.option_id,
+            timebase=getattr(source, "timebase", 24),
+            ntsc=getattr(source, "ntsc", True),
+        ))
     else:
         print_func("No sequence plan was produced.")
 
-    action = prompt_with_default("Action: [a]ccept, [r]efine once, [s]top", "a", input_func=input_func).lower()
-    if action not in {"a", "r", "s"}:
-        action = prompt_with_default("Invalid action. Choose [a], [r], or [s]", "a", input_func=input_func).lower()
-    if action not in {"a", "r", "s"}:
+    action = prompt_with_default("Action: [b]uild with assistant, [a]ccept, [r]efine once, [s]top", "b", input_func=input_func).lower()
+    if action not in {"a", "b", "r", "s"}:
+        action = prompt_with_default("Invalid action. Choose [b], [a], [r], or [s]", "b", input_func=input_func).lower()
+    if action not in {"a", "b", "r", "s"}:
         raise BiteBuilderError(build_validation_error(
             code="GUIDED-ACTION-INVALID",
             error_type="invalid_guided_input",
-            message="Guided action must be one of a, r, or s.",
-            expected_input_format="a, r, or s",
+            message="Guided action must be one of b, a, r, or s.",
+            expected_input_format="b, a, r, or s",
             next_action="Run guided mode again and choose a valid action.",
             stage="guided",
         ))
@@ -2640,6 +3120,28 @@ def run_guided_flow(args, *, input_func=input, print_func=print) -> dict:
             next_action="Adjust the brief and rerun guided mode.",
             stage="guided",
         ))
+
+    if action == "b":
+        builder_result = run_guided_build_loop(
+            initial_plan_payload=plan_payload,
+            transcript_text=read_text_file(transcript_path),
+            xml_text=read_text_file(xml_path),
+            transcript_segments=result["segments"],
+            output_dir=output_dir,
+            option_id=args.option_id,
+            model=model,
+            host=args.host,
+            timeout=args.timeout,
+            thinking_mode=args.thinking_mode,
+            max_bite_duration_seconds=max_bite_duration,
+            max_total_duration_seconds=max_total_duration,
+            require_changed_selected_cuts=require_changed,
+            refinement_retries=args.refinement_retries,
+            sequence_plan_path=result["sequence_plan_path"],
+            input_func=input_func,
+            print_func=print_func,
+        )
+        return {"action": "build", "result": result, "builder": builder_result}
 
     instruction = prompt_with_default("Refinement instruction", "make it shorter", input_func=input_func)
     refinement_dir = os.path.join(output_dir, "refinement-2")
@@ -2716,11 +3218,73 @@ def main():
 
     if args.sequence_plan:
         try:
+            sequence_plan_text = read_text_file(args.sequence_plan)
+            transcript_text = read_text_file(args.transcript)
+            xml_text = read_text_file(args.xml)
+            if args.build:
+                source = parse_premiere_xml_safe(xml_text)
+                try:
+                    segments = parse_transcript(
+                        transcript_text,
+                        strict=True,
+                        timebase=source.timebase,
+                        ntsc=source.ntsc,
+                    )
+                except TranscriptValidationError as exc:
+                    raise build_transcript_timecode_error(exc.errors)
+                try:
+                    initial_payload = json.loads(sequence_plan_text)
+                except json.JSONDecodeError as exc:
+                    raise BiteBuilderError(build_validation_error(
+                        code="SEQUENCE-PLAN-JSON-INVALID",
+                        error_type="invalid_sequence_plan",
+                        message="Sequence plan JSON is invalid.",
+                        expected_input_format="A valid _sequence_plan.json file.",
+                        next_action="Pass a valid sequence plan JSON artifact and retry.",
+                        stage="sequence_plan",
+                        recoverable=True,
+                        details={"cause": str(exc)},
+                    )) from exc
+                try:
+                    SequencePlan.from_dict(initial_payload, transcript_segments=segments)
+                except SequencePlanValidationError as exc:
+                    raise BiteBuilderError(build_validation_error(
+                        code="SEQUENCE-PLAN-INVALID",
+                        error_type="invalid_sequence_plan",
+                        message="Sequence plan did not validate against the transcript.",
+                        expected_input_format="A sequence plan whose bites reference exact transcript segment indexes and timecodes.",
+                        next_action="Fix the sequence plan segment indexes/timecodes/statuses and retry.",
+                        stage="sequence_plan",
+                        recoverable=True,
+                        details={"cause": str(exc)},
+                    )) from exc
+                result = run_guided_build_loop(
+                    initial_plan_payload=initial_payload,
+                    transcript_text=transcript_text,
+                    xml_text=xml_text,
+                    transcript_segments=segments,
+                    output_dir=args.output,
+                    option_id=args.option_id,
+                    model=args.model,
+                    host=args.host,
+                    timeout=args.timeout,
+                    thinking_mode=args.thinking_mode,
+                    max_bite_duration_seconds=args.max_bite_duration,
+                    max_total_duration_seconds=args.max_total_duration,
+                    require_changed_selected_cuts=args.require_changed_cuts,
+                    refinement_retries=args.refinement_retries,
+                    sequence_plan_path=args.sequence_plan,
+                )
+                print(f"Build status: {result['status']}")
+                print(f"Current sequence plan: {os.path.abspath(result['plan_path'])}")
+                if result.get("render"):
+                    print(f"Generated XML: {os.path.abspath(result['render']['output_path'])}")
+                return
             if args.refine_instruction:
                 result = refine_sequence_plan(
-                    sequence_plan_text=read_text_file(args.sequence_plan),
-                    transcript_text=read_text_file(args.transcript),
-                    xml_text=read_text_file(args.xml),
+                    sequence_plan_text=sequence_plan_text,
+                    transcript_text=transcript_text,
+                    xml_text=xml_text,
                     output_dir=args.output,
                     instruction=args.refine_instruction,
                     option_id=args.option_id,
@@ -2736,9 +3300,9 @@ def main():
                 )
             else:
                 result = render_sequence_plan(
-                    sequence_plan_text=read_text_file(args.sequence_plan),
-                    transcript_text=read_text_file(args.transcript),
-                    xml_text=read_text_file(args.xml),
+                    sequence_plan_text=sequence_plan_text,
+                    transcript_text=transcript_text,
+                    xml_text=xml_text,
                     output_dir=args.output,
                     option_id=args.option_id,
                     sequence_plan_path=args.sequence_plan,
@@ -2901,7 +3465,7 @@ Examples:
     parser.add_argument(
         '--guided',
         action='store_true',
-        help='Prompt through first-pass generation and one optional refinement pass'
+        help='Prompt through first-pass generation and an optional persistent assistant build loop'
     )
     parser.add_argument(
         '--thinking-mode',
@@ -2912,6 +3476,11 @@ Examples:
     parser.add_argument(
         '--sequence-plan',
         help='Path to an existing _sequence_plan.json to render without calling the LLM'
+    )
+    parser.add_argument(
+        '--build',
+        action='store_true',
+        help='Open the persistent assistant build loop from --sequence-plan instead of immediately rendering'
     )
     parser.add_argument(
         '--option-id',
@@ -2944,6 +3513,10 @@ Examples:
     )
 
     args = parser.parse_args()
+    if args.build and not args.sequence_plan:
+        parser.error('--build requires --sequence-plan')
+    if args.build and args.refine_instruction:
+        parser.error('--build cannot be combined with --refine-instruction')
     if not args.guided and not args.sequence_plan:
         missing = []
         if not args.transcript:

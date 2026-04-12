@@ -31,6 +31,7 @@ def args(**overrides):
         "timeout": 1,
         "thinking_mode": "auto",
         "option_id": None,
+        "build": False,
         "max_bite_duration": None,
         "max_total_duration": None,
         "require_changed_cuts": False,
@@ -54,8 +55,41 @@ def plan_payload():
                         "tc_in": "00:00:00:00",
                         "tc_out": "00:00:02:00",
                         "purpose": "HOOK",
+                        "text": "Hello there.",
                         "dialogue_summary": "Hello there.",
                     }
+                ],
+            }
+        ],
+    ).to_dict()
+
+
+def two_bite_plan_payload():
+    return build_sequence_plan(
+        transcript_segments=SEGMENTS,
+        options=[
+            {
+                "option_id": "option-1",
+                "name": "Greeting",
+                "estimated_duration_seconds": 4,
+                "bites": [
+                    {
+                        "segment_index": 0,
+                        "tc_in": "00:00:00:00",
+                        "tc_out": "00:00:02:00",
+                        "purpose": "HOOK",
+                        "text": "Hello there.",
+                        "dialogue_summary": "Hello there.",
+                        "rationale": "Starts with the clearest line.",
+                    },
+                    {
+                        "segment_index": 1,
+                        "tc_in": "00:00:02:00",
+                        "tc_out": "00:00:04:00",
+                        "purpose": "BUTTON",
+                        "text": "General Kenobi.",
+                        "dialogue_summary": "General Kenobi.",
+                    },
                 ],
             }
         ],
@@ -103,6 +137,74 @@ class GuidedCliFlowTests(unittest.TestCase):
             self.assertEqual(run_pipeline.call_args.kwargs["project_context"], "context")
             self.assertEqual(run_pipeline.call_args.kwargs["brief"], "goal")
             self.assertTrue(any("Option option-1: Greeting" in item for item in outputs))
+            self.assertTrue(any("Spoken text: Hello there." in item for item in outputs))
+
+    def test_summarize_sequence_plan_includes_editorial_duration_and_rationale(self):
+        plan = bitebuilder.SequencePlan.from_dict(two_bite_plan_payload(), transcript_segments=SEGMENTS)
+
+        summary = bitebuilder.summarize_sequence_plan(plan, timebase=24, ntsc=False)
+
+        self.assertIn("Total selected duration: 4.0s", summary)
+        self.assertIn("00:00:00:00 - 00:00:02:00 (2.0s)", summary)
+        self.assertIn("Rationale: Starts with the clearest line.", summary)
+        self.assertIn("Spoken text: Hello there.", summary)
+
+    def test_sequence_plan_direct_edits_add_delete_and_move_selected_segments(self):
+        plan = bitebuilder.SequencePlan.from_dict(plan_payload(), transcript_segments=SEGMENTS)
+
+        added = bitebuilder.add_segment_to_sequence_plan(
+            plan,
+            transcript_segments=SEGMENTS,
+            segment_index=1,
+            timebase=24,
+            ntsc=False,
+        )
+        self.assertEqual([bite.segment_index for bite in added.options[0].selected_bites()], [0, 1])
+
+        moved = bitebuilder.move_selected_bite_in_sequence_plan(
+            added,
+            transcript_segments=SEGMENTS,
+            from_position=2,
+            to_position=1,
+            timebase=24,
+            ntsc=False,
+        )
+        self.assertEqual([bite.segment_index for bite in moved.options[0].selected_bites()], [1, 0])
+
+        removed = bitebuilder.remove_selected_bite_from_sequence_plan(
+            moved,
+            transcript_segments=SEGMENTS,
+            selected_position=2,
+            timebase=24,
+            ntsc=False,
+        )
+        self.assertEqual([bite.segment_index for bite in removed.options[0].selected_bites()], [1])
+
+    def test_guided_build_path_enters_persistent_builder(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            sequence_plan_path = tmp / "_sequence_plan.json"
+            sequence_plan_path.write_text(json.dumps(plan_payload()), encoding="utf-8")
+            values = iter(["transcript.txt", "source.xml", "context", "goal", "gemma3:4b", str(tmp), "", "", "N", "b"])
+            mocked_result = {
+                "sequence_plan_path": str(sequence_plan_path),
+                "segments": SEGMENTS,
+                "output_dir": str(tmp),
+            }
+            mocked_builder = {"action": "build", "status": "accept", "plan_path": str(sequence_plan_path)}
+
+            with patch.object(bitebuilder, "read_text_file", side_effect=fake_reader_for(sequence_plan_path)):
+                with patch.object(bitebuilder, "run_pipeline", return_value=mocked_result):
+                    with patch.object(bitebuilder, "run_guided_build_loop", return_value=mocked_builder) as build_loop:
+                        result = bitebuilder.run_guided_flow(
+                            args(),
+                            input_func=lambda prompt: next(values),
+                            print_func=lambda message: None,
+                        )
+
+            self.assertEqual(result["action"], "build")
+            self.assertEqual(result["builder"], mocked_builder)
+            build_loop.assert_called_once()
 
     def test_guided_refine_path_uses_revision_safe_output(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -171,6 +273,18 @@ class GuidedCliFlowTests(unittest.TestCase):
             with contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit):
                     bitebuilder.parse_args()
+
+    def test_build_requires_sequence_plan(self):
+        with patch("sys.argv", ["bitebuilder.py", "--build"]):
+            with contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    bitebuilder.parse_args()
+
+    def test_sequence_plan_build_mode_parses(self):
+        with patch("sys.argv", ["bitebuilder.py", "--sequence-plan", "plan.json", "--transcript", "t.txt", "--xml", "x.xml", "--build"]):
+            parsed = bitebuilder.parse_args()
+        self.assertTrue(parsed.build)
+        self.assertEqual(parsed.sequence_plan, "plan.json")
 
     def test_missing_sequence_plan_before_refine_fails(self):
         values = iter(["transcript.txt", "source.xml", "context", "goal", "gemma3:4b", "out", "", "", "N", "r"])
