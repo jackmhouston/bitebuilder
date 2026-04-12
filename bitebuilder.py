@@ -28,6 +28,7 @@ from parser.premiere_xml import parse_premiere_xml_string
 from generator.xmeml import generate_sequence, build_deterministic_sequence_id
 from generator.timecode import estimate_duration_seconds
 from generator.sequence_plan import SequencePlan, build_sequence_plan
+from generator.sequence_plan_constraints import evaluate_sequence_plan_constraints
 from llm.prompts import (
     SYSTEM_PROMPT,
     EDITORIAL_DIRECTION_SYSTEM_PROMPT,
@@ -2041,6 +2042,10 @@ def refine_sequence_plan(
     host: str = DEFAULT_HOST,
     timeout: int = DEFAULT_TIMEOUT,
     thinking_mode: str = DEFAULT_THINKING_MODE,
+    max_bite_duration_seconds: float | None = None,
+    max_total_duration_seconds: float | None = None,
+    require_changed_selected_cuts: bool = False,
+    refinement_retries: int = 1,
 ) -> dict:
     """Refine a saved sequence plan with the configured Ollama model and render XML."""
     source = parse_premiere_xml_safe(xml_text)
@@ -2068,28 +2073,26 @@ def refine_sequence_plan(
             details={"cause": str(exc)},
         )) from exc
 
+    constraints_enabled = any([
+        max_bite_duration_seconds is not None,
+        max_total_duration_seconds is not None,
+        require_changed_selected_cuts,
+    ])
+    if refinement_retries < 0:
+        raise BiteBuilderError(build_validation_error(
+            code="SEQUENCE-PLAN-REFINE-RETRIES-INVALID",
+            error_type="invalid_numeric_input",
+            message="refinement_retries must be zero or greater.",
+            expected_input_format="refinement_retries=integer >= 0",
+            next_action="Use a non-negative refinement retry count.",
+            stage="sequence_plan_refinement",
+            details={"value": refinement_retries},
+        ))
+
     try:
         original_plan = SequencePlan.from_dict(original_payload, transcript_segments=segments)
         target_option = original_plan.option(option_id)
         target_option_id = target_option.option_id
-        prompt = build_sequence_plan_refinement_prompt(
-            current_plan=original_payload,
-            transcript_segments=segments,
-            instruction=instruction,
-            target_option_id=target_option_id,
-        )
-        refined_payload = ollama_generate(
-            system_prompt="Return only valid JSON for a BiteBuilder sequence_plan.v1 refinement.",
-            user_prompt=prompt,
-            model=model,
-            host=host,
-            timeout=timeout,
-            thinking_mode=thinking_mode,
-        )
-        refined_plan = validate_refined_sequence_plan(refined_payload, transcript_segments=segments)
-        refined_cuts = refined_plan.to_cuts(target_option_id)
-        if not refined_cuts:
-            raise ValueError(f"Refined option {target_option_id!r} has no selected bites to render.")
     except Exception as exc:
         raise BiteBuilderError(build_validation_error(
             code="SEQUENCE-PLAN-REFINE-FAILED",
@@ -2101,6 +2104,74 @@ def refine_sequence_plan(
             recoverable=True,
             details={"cause": str(exc)},
         )) from exc
+
+    constraint_feedback = None
+    refined_plan = None
+    refined_cuts = None
+    for attempt in range(refinement_retries + 1):
+        prompt = build_sequence_plan_refinement_prompt(
+            current_plan=original_payload,
+            transcript_segments=segments,
+            instruction=instruction,
+            target_option_id=target_option_id,
+            max_bite_duration_seconds=max_bite_duration_seconds,
+            max_total_duration_seconds=max_total_duration_seconds,
+            require_changed_selected_cuts=require_changed_selected_cuts,
+            constraint_feedback=constraint_feedback,
+        )
+        try:
+            refined_payload = ollama_generate(
+                system_prompt="Return only valid JSON for a BiteBuilder sequence_plan.v1 refinement.",
+                user_prompt=prompt,
+                model=model,
+                host=host,
+                timeout=timeout,
+                thinking_mode=thinking_mode,
+            )
+            refined_plan = validate_refined_sequence_plan(refined_payload, transcript_segments=segments)
+            refined_cuts = refined_plan.to_cuts(target_option_id)
+            if not refined_cuts:
+                raise ValueError(f"Refined option {target_option_id!r} has no selected bites to render.")
+        except Exception as exc:
+            raise BiteBuilderError(build_validation_error(
+                code="SEQUENCE-PLAN-REFINE-FAILED",
+                error_type="runtime_model_output",
+                message="Sequence plan refinement failed validation.",
+                expected_input_format="A complete valid sequence_plan.v1 JSON object using exact transcript segments.",
+                next_action="Revise the refinement instruction or retry with a model response that follows the sequence-plan contract.",
+                stage="sequence_plan_refinement",
+                recoverable=True,
+                details={"cause": str(exc)},
+            )) from exc
+
+        if not constraints_enabled:
+            break
+
+        constraint_result = evaluate_sequence_plan_constraints(
+            current_plan=refined_plan,
+            previous_plan=original_plan,
+            transcript_segments=segments,
+            option_id=target_option_id,
+            timebase=source.timebase,
+            ntsc=source.ntsc,
+            max_bite_duration_seconds=max_bite_duration_seconds,
+            max_total_duration_seconds=max_total_duration_seconds,
+            require_changed_selected_cuts=require_changed_selected_cuts,
+        )
+        if constraint_result.passes:
+            break
+        constraint_feedback = constraint_result.to_dict()
+        if attempt >= refinement_retries:
+            raise BiteBuilderError(build_validation_error(
+                code="SEQUENCE-PLAN-REFINE-CONSTRAINTS-FAILED",
+                error_type="runtime_model_output",
+                message="Sequence plan refinement did not satisfy editorial constraints.",
+                expected_input_format="A valid refined sequence plan that satisfies the requested duration/change constraints.",
+                next_action="Adjust the refinement instruction or relax constraints, then retry.",
+                stage="sequence_plan_refinement",
+                recoverable=True,
+                details={"constraint_result": constraint_feedback},
+            ))
 
     os.makedirs(output_dir, exist_ok=True)
     revision = _next_sequence_plan_revision(original_payload)
@@ -2410,6 +2481,10 @@ def main():
                     host=args.host,
                     timeout=args.timeout,
                     thinking_mode=args.thinking_mode,
+                    max_bite_duration_seconds=args.max_bite_duration,
+                    max_total_duration_seconds=args.max_total_duration,
+                    require_changed_selected_cuts=args.require_changed_cuts,
+                    refinement_retries=args.refinement_retries,
                 )
             else:
                 result = render_sequence_plan(
@@ -2592,6 +2667,27 @@ Examples:
     parser.add_argument(
         '--refine-instruction',
         help='Instruction for revising an existing sequence plan with the configured model'
+    )
+    parser.add_argument(
+        '--max-bite-duration',
+        type=float,
+        help='Maximum selected bite duration in seconds for refinement constraint checks'
+    )
+    parser.add_argument(
+        '--max-total-duration',
+        type=float,
+        help='Maximum selected total duration in seconds for refinement constraint checks'
+    )
+    parser.add_argument(
+        '--require-changed-cuts',
+        action='store_true',
+        help='Require refined selected cuts to differ from the source plan option'
+    )
+    parser.add_argument(
+        '--refinement-retries',
+        type=int,
+        default=1,
+        help='Retries after a structurally valid refinement fails editorial constraints (default: 1)'
     )
 
     args = parser.parse_args()

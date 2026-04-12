@@ -39,6 +39,7 @@ def build_sequence_plan_refinement_prompt(
     max_bite_duration_seconds: float | None = None,
     max_total_duration_seconds: float | None = None,
     require_changed_selected_cuts: bool = False,
+    constraint_feedback: Mapping[str, Any] | None = None,
 ) -> str:
     """Build a strict prompt for revising a full sequence_plan.v1 object."""
     plan_copy = deepcopy(dict(current_plan))
@@ -53,6 +54,13 @@ def build_sequence_plan_refinement_prompt(
     if require_changed_selected_cuts:
         constraint_lines.append("- The revised selected cuts must differ from the current selected cuts.")
     constraints_text = "\n".join(constraint_lines) if constraint_lines else "- No additional duration/change constraints supplied."
+    feedback_text = ""
+    if constraint_feedback is not None:
+        feedback_text = (
+            "\n\nPrevious refined plan failed editorial constraints. "
+            "Fix every violation in this JSON feedback:\n"
+            f"{json.dumps(dict(constraint_feedback), indent=2, sort_keys=True)}"
+        )
 
     return f"""You are revising a BiteBuilder sequence plan.
 
@@ -60,7 +68,7 @@ Return ONLY valid JSON. Do not return Markdown fences, prose, XML, diffs, patche
 Return a COMPLETE {SCHEMA_VERSION} object, not a delta.
 
 User refinement instruction:
-{instruction}
+{instruction}{feedback_text}
 
 Target option:
 {target}

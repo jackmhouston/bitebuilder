@@ -200,5 +200,99 @@ class GemmaRefinementCliTests(unittest.TestCase):
             self.assertFalse(output_dir.exists())
 
 
+    def test_constraint_retry_succeeds_after_unchanged_first_response(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            plan_path = tmp / "_sequence_plan.json"
+            output_dir = tmp / "refined"
+            write_plan(plan_path)
+            unchanged = json.loads(plan_path.read_text(encoding="utf-8"))
+            revised = self._revised_plan(plan_path)
+
+            with patch.object(bitebuilder, "ollama_generate", side_effect=[unchanged, revised]) as generate:
+                result = bitebuilder.refine_sequence_plan(
+                    sequence_plan_text=plan_path.read_text(encoding="utf-8"),
+                    transcript_text=TRANSCRIPT_TEXT,
+                    xml_text=XML_TEXT,
+                    output_dir=str(output_dir),
+                    instruction="make it shorter",
+                    require_changed_selected_cuts=True,
+                    refinement_retries=1,
+                )
+
+            self.assertEqual(generate.call_count, 2)
+            retry_prompt = generate.call_args_list[1].kwargs["user_prompt"]
+            self.assertIn("selected_cuts_unchanged", retry_prompt)
+            self.assertTrue(Path(result["revision_path"]).exists())
+            self.assertTrue(Path(result["output_path"]).exists())
+
+    def test_constraint_failure_with_no_retries_writes_nothing_and_reports_details(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            plan_path = tmp / "_sequence_plan.json"
+            output_dir = tmp / "refined"
+            write_plan(plan_path)
+            unchanged = json.loads(plan_path.read_text(encoding="utf-8"))
+
+            with patch.object(bitebuilder, "ollama_generate", return_value=unchanged):
+                with self.assertRaises(bitebuilder.BiteBuilderError) as ctx:
+                    bitebuilder.refine_sequence_plan(
+                        sequence_plan_text=plan_path.read_text(encoding="utf-8"),
+                        transcript_text=TRANSCRIPT_TEXT,
+                        xml_text=XML_TEXT,
+                        output_dir=str(output_dir),
+                        instruction="make it shorter",
+                        require_changed_selected_cuts=True,
+                        refinement_retries=0,
+                    )
+
+            self.assertEqual(ctx.exception.error["code"], "SEQUENCE-PLAN-REFINE-CONSTRAINTS-FAILED")
+            self.assertIn("selected_cuts_unchanged", json.dumps(ctx.exception.error["details"]))
+            self.assertFalse(output_dir.exists())
+
+    def test_no_constraints_do_not_trigger_editorial_retry(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            plan_path = tmp / "_sequence_plan.json"
+            output_dir = tmp / "refined"
+            write_plan(plan_path)
+            unchanged = json.loads(plan_path.read_text(encoding="utf-8"))
+
+            with patch.object(bitebuilder, "ollama_generate", return_value=unchanged) as generate:
+                result = bitebuilder.refine_sequence_plan(
+                    sequence_plan_text=plan_path.read_text(encoding="utf-8"),
+                    transcript_text=TRANSCRIPT_TEXT,
+                    xml_text=XML_TEXT,
+                    output_dir=str(output_dir),
+                    instruction="make it shorter",
+                )
+
+            self.assertEqual(generate.call_count, 1)
+            self.assertTrue(Path(result["output_path"]).exists())
+
+    def test_overlong_bite_constraint_uses_source_timing_and_fails_before_write(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            plan_path = tmp / "_sequence_plan.json"
+            output_dir = tmp / "refined"
+            write_plan(plan_path)
+            unchanged = json.loads(plan_path.read_text(encoding="utf-8"))
+
+            with patch.object(bitebuilder, "ollama_generate", return_value=unchanged):
+                with self.assertRaises(bitebuilder.BiteBuilderError) as ctx:
+                    bitebuilder.refine_sequence_plan(
+                        sequence_plan_text=plan_path.read_text(encoding="utf-8"),
+                        transcript_text=TRANSCRIPT_TEXT,
+                        xml_text=XML_TEXT,
+                        output_dir=str(output_dir),
+                        instruction="make it shorter",
+                        max_bite_duration_seconds=1,
+                        refinement_retries=0,
+                    )
+
+            self.assertIn("bite_duration_exceeds_max", json.dumps(ctx.exception.error["details"]))
+            self.assertFalse(output_dir.exists())
+
+
 if __name__ == "__main__":
     unittest.main()
