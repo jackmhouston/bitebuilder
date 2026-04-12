@@ -95,3 +95,23 @@ The current core implementation lives in `generator/sequence_plan.py` and keeps 
 - `replaces_bite_id` is preserved as metadata only. The module does not apply replacement/swap behavior in this tranche.
 
 `segment_index` is zero-based and must exactly reference the transcript segment whose `tc_in` and `tc_out` match the bite. Invalid indexes, mismatched timecode pairs, unknown statuses, and missing bite identifiers fail fast with `SequencePlanValidationError`.
+
+## Rendering a saved plan
+
+Phase 2 adds a non-LLM render path for saved plans:
+
+```bash
+.venv/bin/python bitebuilder.py \
+  --sequence-plan output/run/_sequence_plan.json \
+  --transcript path/to/transcript.txt \
+  --xml path/to/source.xml \
+  --output output/plan-render \
+  --option-id option-1
+```
+
+Notes:
+
+- `--option-id` is optional; when omitted, the first option renders.
+- This mode does not require `--brief`, model, host, timeout, or Ollama.
+- The source plan is not mutated.
+- Successful renders write an XML file plus `_sequence_plan_render.json` metadata.

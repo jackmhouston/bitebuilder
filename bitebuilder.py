@@ -27,7 +27,7 @@ from parser.transcript import TranscriptValidationError
 from parser.premiere_xml import parse_premiere_xml_string
 from generator.xmeml import generate_sequence, build_deterministic_sequence_id
 from generator.timecode import estimate_duration_seconds
-from generator.sequence_plan import build_sequence_plan
+from generator.sequence_plan import SequencePlan, build_sequence_plan
 from llm.prompts import (
     SYSTEM_PROMPT,
     EDITORIAL_DIRECTION_SYSTEM_PROMPT,
@@ -1757,6 +1757,11 @@ def write_debug_artifacts(output_dir: str, debug_artifacts: dict | None) -> dict
     return paths
 
 
+def safe_filename(name: str) -> str:
+    """Return a filesystem-friendly XML basename using the legacy simple sanitizer."""
+    return (name or "sequence").replace(" ", "_").replace("/", "-")
+
+
 def _build_sequence_plan_artifact(
     response: dict,
     segments,
@@ -1884,7 +1889,7 @@ def write_output_files(
                 source.ntsc,
             )
 
-        safe_name = opt_name.replace(" ", "_").replace("/", "-")
+        safe_name = safe_filename(opt_name)
         filename = f"{safe_name}.xml"
         filepath = os.path.join(output_dir, filename)
 
@@ -1909,6 +1914,105 @@ def write_output_files(
         )
 
     return generated_files, debug_path, debug_files, sequence_plan_path
+
+
+def render_sequence_plan(
+    *,
+    sequence_plan_text: str,
+    transcript_text: str,
+    xml_text: str,
+    output_dir: str,
+    option_id: str | None = None,
+    sequence_plan_path: str | None = None,
+) -> dict:
+    """Render a validated sequence-plan option to XMEML without calling the LLM."""
+    source = parse_premiere_xml_safe(xml_text)
+    try:
+        segments = parse_transcript(
+            transcript_text,
+            strict=True,
+            timebase=source.timebase,
+            ntsc=source.ntsc,
+        )
+    except TranscriptValidationError as exc:
+        raise build_transcript_timecode_error(exc.errors)
+
+    try:
+        sequence_plan_payload = json.loads(sequence_plan_text)
+    except json.JSONDecodeError as exc:
+        raise BiteBuilderError(build_validation_error(
+            code="SEQUENCE-PLAN-JSON-INVALID",
+            error_type="invalid_sequence_plan",
+            message="Sequence plan JSON is invalid.",
+            expected_input_format="A valid _sequence_plan.json file.",
+            next_action="Pass a valid sequence plan JSON artifact and retry.",
+            stage="sequence_plan",
+            recoverable=True,
+            details={"cause": str(exc)},
+        )) from exc
+
+    try:
+        plan = SequencePlan.from_dict(sequence_plan_payload, transcript_segments=segments)
+        option = plan.option(option_id)
+        cuts = option.to_cuts()
+    except Exception as exc:
+        raise BiteBuilderError(build_validation_error(
+            code="SEQUENCE-PLAN-INVALID",
+            error_type="invalid_sequence_plan",
+            message="Sequence plan did not validate against the transcript.",
+            expected_input_format="A sequence plan whose bites reference exact transcript segment indexes and timecodes.",
+            next_action="Fix the sequence plan segment indexes/timecodes/statuses and retry.",
+            stage="sequence_plan",
+            recoverable=True,
+            details={"cause": str(exc)},
+        )) from exc
+
+    if not cuts:
+        raise BiteBuilderError(build_validation_error(
+            code="SEQUENCE-PLAN-NO-SELECTED-BITES",
+            error_type="invalid_sequence_plan",
+            message="Sequence plan option has no selected bites to render.",
+            expected_input_format="At least one bite with status='selected'.",
+            next_action="Select at least one bite or choose another option id.",
+            stage="sequence_plan",
+            recoverable=True,
+            details={"option_id": option.option_id},
+        ))
+
+    sequence_name = option.name or option.option_id
+    xml_str = generate_sequence(name=sequence_name, cuts=cuts, source=source)
+    ET.fromstring(xml_str)
+
+    os.makedirs(output_dir, exist_ok=True)
+    filename = f"{safe_filename(sequence_name)}.xml"
+    output_path = os.path.join(output_dir, filename)
+    with open(output_path, "w", encoding="utf-8") as handle:
+        handle.write(xml_str)
+
+    metadata = {
+        "timestamp": _iso_timestamp(),
+        "sequence_plan_source": os.path.abspath(sequence_plan_path) if sequence_plan_path else None,
+        "option_id": option.option_id,
+        "sequence_name": sequence_name,
+        "generated_xml_path": os.path.abspath(output_path),
+        "cut_count": len(cuts),
+        "source": source.to_dict(),
+    }
+    metadata_path = os.path.join(output_dir, "_sequence_plan_render.json")
+    with open(metadata_path, "w", encoding="utf-8") as handle:
+        json.dump(metadata, handle, indent=2, sort_keys=True)
+
+    return {
+        "source": source,
+        "segments": segments,
+        "sequence_plan": plan,
+        "option_id": option.option_id,
+        "sequence_name": sequence_name,
+        "cuts": cuts,
+        "output_path": output_path,
+        "metadata_path": metadata_path,
+        "metadata": metadata,
+    }
 
 
 def run_pipeline(
@@ -2184,6 +2288,38 @@ def main():
     print("=" * 60)
     print()
 
+    if args.sequence_plan:
+        try:
+            result = render_sequence_plan(
+                sequence_plan_text=read_text_file(args.sequence_plan),
+                transcript_text=read_text_file(args.transcript),
+                xml_text=read_text_file(args.xml),
+                output_dir=args.output,
+                option_id=args.option_id,
+                sequence_plan_path=args.sequence_plan,
+            )
+        except BiteBuilderError as exc:
+            logger.error("bitebuilder_error=%s", format_error_for_log(exc.error))
+            print(f"ERROR [{exc.error.get('code')}]: {exc.error.get('message')}", file=sys.stderr)
+            print(f"Expected format: {exc.error.get('expected_input_format')}", file=sys.stderr)
+            print(f"Fix this: {exc.error.get('next_action')}", file=sys.stderr)
+            sys.exit(1)
+        except Exception as exc:
+            logger.exception("Unexpected bitebuilder error.")
+            print("ERROR [RUNTIME-UNKNOWN]: Unexpected runtime failure.", file=sys.stderr)
+            print("Fix this: Re-run with valid inputs and check the error details.", file=sys.stderr)
+            print(f"Details: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        source = result["source"]
+        print(f"Rendered sequence plan option: {result['option_id']}")
+        print(f"Source: {source.source_name}")
+        print(f"Rate: {source.actual_fps:.3f}fps | Resolution: {source.width}x{source.height}")
+        print(f"Generated XML: {os.path.abspath(result['output_path'])}")
+        print(f"Render metadata: {os.path.abspath(result['metadata_path'])}")
+        print(f"Cuts: {len(result['cuts'])}")
+        return
+
     try:
         result = run_pipeline(
             transcript_text=read_text_file(args.transcript),
@@ -2292,8 +2428,8 @@ Examples:
         help='Path to Premiere Pro XML export (provides source media metadata)'
     )
     parser.add_argument(
-        '--brief', required=True,
-        help='Creative brief describing the desired edit (quoted string)'
+        '--brief', required=False,
+        help='Creative brief describing the desired edit (quoted string); not required with --sequence-plan'
     )
     parser.add_argument(
         '--options', type=int, default=3,
@@ -2321,8 +2457,19 @@ Examples:
         default=DEFAULT_THINKING_MODE,
         help=f'Qwen thinking mode control (default: {DEFAULT_THINKING_MODE})'
     )
+    parser.add_argument(
+        '--sequence-plan',
+        help='Path to an existing _sequence_plan.json to render without calling the LLM'
+    )
+    parser.add_argument(
+        '--option-id',
+        help='Sequence-plan option id to render (defaults to first option)'
+    )
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    if not args.sequence_plan and not args.brief:
+        parser.error('--brief is required unless --sequence-plan is provided')
+    return args
 
 
 if __name__ == '__main__':
