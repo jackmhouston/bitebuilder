@@ -100,3 +100,18 @@ For every final implementation or planning report, include:
 - **Next steps:** the recommended next 1-3 actions, ordered by priority.
 
 Keep this section concise and project-specific; do not bury it in generic summaries.
+
+## Agent Testing Ownership
+
+When a task includes implementation, refactoring, planning-to-execution handoff, LLM smoke testing, Premiere/XML validation, or other verification work, the agent must run the relevant tests/checks directly instead of asking the user to run them first.
+
+If tests or smoke checks fail:
+- keep investigating and fixing until the failure is resolved, or until a real blocker is identified;
+- preserve and report the exact failing command/output;
+- do not stop at “please test this” while a testable local path remains;
+- only hand off to the user when the remaining check genuinely requires the user’s environment or manual inspection, such as confirming a Premiere import/editorial judgment.
+
+Every final report must include:
+- **Results:** what passed/failed, with evidence.
+- **How to test:** exact commands for the user to reproduce if desired.
+- **Next steps:** the next 1-3 recommended actions.
