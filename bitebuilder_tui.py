@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import textwrap
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -256,6 +257,42 @@ def _safe_addstr(stdscr: Any, y: int, x: int, text: str, attr: int = 0) -> None:
         return
 
 
+def _fit_line(text: str, width: int) -> str:
+    """Fit a status/path line with a visible middle ellipsis instead of silent cutoff."""
+    if width <= 0:
+        return ""
+    if len(text) <= width:
+        return text
+    if width <= 4:
+        return text[:width]
+    keep = max(1, (width - 3) // 2)
+    return f"{text[:keep]}...{text[-(width - 3 - keep):]}"
+
+
+def _wrap_panel_lines(text: str, width: int) -> list[str]:
+    """Wrap panel text to terminal width while preserving readable indentation."""
+    if width <= 1:
+        return [""]
+    wrapped_lines: list[str] = []
+    for raw_line in text.splitlines() or [""]:
+        if not raw_line:
+            wrapped_lines.append("")
+            continue
+        leading = len(raw_line) - len(raw_line.lstrip(" "))
+        subsequent_indent = " " * min(leading + 2, max(0, width - 1))
+        wrapper = textwrap.TextWrapper(
+            width=max(8, width),
+            subsequent_indent=subsequent_indent,
+            break_long_words=False,
+            break_on_hyphens=False,
+            replace_whitespace=False,
+            drop_whitespace=True,
+        )
+        wrapped = wrapper.wrap(raw_line)
+        wrapped_lines.extend(wrapped or [""])
+    return wrapped_lines
+
+
 def _prompt(stdscr: Any, curses: Any, label: str, default: str = "") -> str:
     max_y, max_x = stdscr.getmaxyx()
     prompt = f"{label}"
@@ -335,33 +372,58 @@ def _pick_file(stdscr: Any, curses: Any, *, start_dir: str, suffixes: tuple[str,
 
 
 def _draw_text_panel(stdscr: Any, title: str, text: str, *, y: int, x: int, h: int, w: int, scroll: int, curses: Any) -> None:
-    _safe_addstr(stdscr, y, x, title[:w - 1], curses.A_BOLD)
-    lines = text.splitlines()
+    _safe_addstr(stdscr, y, x, _fit_line(title, w - 1), curses.A_BOLD)
+    lines = _wrap_panel_lines(text, max(8, w - 1))
     for offset, line in enumerate(lines[scroll: scroll + max(0, h - 1)], start=1):
-        _safe_addstr(stdscr, y + offset, x, line[:w - 1])
+        _safe_addstr(stdscr, y + offset, x, line, 0)
 
 
 def _draw(stdscr: Any, curses: Any, session: TuiSession, transcript_query: str, transcript_scroll: int, plan_scroll: int) -> None:
     stdscr.erase()
     height, width = stdscr.getmaxyx()
-    left_w = max(30, width // 2)
-    right_w = max(20, width - left_w - 1)
-    header = (
-        "BiteBuilder TUI | T/TXT picker  X/XML picker  P/plan  L/load  N/first-pass  "
-        "A/assistant  +/- add/delete  M/move  / search  O output  G goal  Q quit"
-    )
-    _safe_addstr(stdscr, 0, 0, header, curses.A_REVERSE)
-    _safe_addstr(stdscr, 1, 0, f"TXT: {session.transcript_path or '-'}")
-    _safe_addstr(stdscr, 2, 0, f"XML: {session.xml_path or '-'}")
-    _safe_addstr(stdscr, 3, 0, f"Plan: {session.plan_path or '-'}")
-    _safe_addstr(stdscr, 4, 0, f"Out: {session.output_dir} | Model: {session.model}")
-    _safe_addstr(stdscr, 5, 0, f"Status: {session.message}")
-    panel_y = 7
+    header_1 = "BiteBuilder TUI | T/TXT X/XML P/plan L/load N/first-pass A/assistant"
+    header_2 = "+ add  - delete  M move  / search  O output  G goal  C context  Q quit"
+    _safe_addstr(stdscr, 0, 0, _fit_line(header_1, width - 1), curses.A_REVERSE)
+    _safe_addstr(stdscr, 1, 0, _fit_line(header_2, width - 1), curses.A_REVERSE)
+    _safe_addstr(stdscr, 2, 0, _fit_line(f"TXT: {session.transcript_path or '-'}", width - 1))
+    _safe_addstr(stdscr, 3, 0, _fit_line(f"XML: {session.xml_path or '-'}", width - 1))
+    _safe_addstr(stdscr, 4, 0, _fit_line(f"Plan: {session.plan_path or '-'}", width - 1))
+    _safe_addstr(stdscr, 5, 0, _fit_line(f"Out: {session.output_dir} | Model: {session.model}", width - 1))
+    _safe_addstr(stdscr, 6, 0, _fit_line(f"Status: {session.message}", width - 1))
+    panel_y = 8
     panel_h = max(4, height - panel_y - 1)
     transcript = session.transcript_text_for_view(query=transcript_query)
     summary = session.summary_text()
-    _draw_text_panel(stdscr, "Transcript (Up/Down scroll)", transcript, y=panel_y, x=0, h=panel_h, w=left_w, scroll=transcript_scroll, curses=curses)
-    _draw_text_panel(stdscr, "Sequence Plan ([/] scroll)", summary, y=panel_y, x=left_w + 1, h=panel_h, w=right_w, scroll=plan_scroll, curses=curses)
+    if width < 120:
+        transcript_h = max(4, panel_h // 2)
+        plan_h = max(4, panel_h - transcript_h - 1)
+        _draw_text_panel(
+            stdscr,
+            "Transcript (Up/Down scroll)",
+            transcript,
+            y=panel_y,
+            x=0,
+            h=transcript_h,
+            w=width,
+            scroll=transcript_scroll,
+            curses=curses,
+        )
+        _draw_text_panel(
+            stdscr,
+            "Sequence Plan ([/] scroll)",
+            summary,
+            y=panel_y + transcript_h + 1,
+            x=0,
+            h=plan_h,
+            w=width,
+            scroll=plan_scroll,
+            curses=curses,
+        )
+    else:
+        left_w = max(48, width // 2)
+        right_w = max(40, width - left_w - 1)
+        _draw_text_panel(stdscr, "Transcript (Up/Down scroll)", transcript, y=panel_y, x=0, h=panel_h, w=left_w, scroll=transcript_scroll, curses=curses)
+        _draw_text_panel(stdscr, "Sequence Plan ([/] scroll)", summary, y=panel_y, x=left_w + 1, h=panel_h, w=right_w, scroll=plan_scroll, curses=curses)
     stdscr.refresh()
 
 

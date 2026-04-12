@@ -5,7 +5,7 @@ from argparse import Namespace
 from pathlib import Path
 
 import bitebuilder
-from bitebuilder_tui import TuiSession
+from bitebuilder_tui import TuiSession, _fit_line, _wrap_panel_lines
 from tests.test_pipeline import TRANSCRIPT_TEXT, XML_TEXT
 from tests.test_plan_to_xmeml import write_plan
 
@@ -93,6 +93,22 @@ class TuiSessionTests(unittest.TestCase):
             session.load_plan()
 
             self.assertIn("General Kenobi.", session.transcript_text_for_view(query="Kenobi"))
+
+    def test_panel_text_wraps_instead_of_silent_truncation(self):
+        text = "Spoken text: " + ("This is a long transcript line that should remain readable. " * 3)
+
+        wrapped = _wrap_panel_lines(text, 32)
+
+        self.assertGreater(len(wrapped), 3)
+        self.assertTrue(all(len(line) <= 32 for line in wrapped))
+        self.assertIn("transcript", " ".join(wrapped))
+
+    def test_fit_line_uses_visible_middle_ellipsis_for_paths(self):
+        fitted = _fit_line("/Volumes/Two Jackson/001_Transcode/transcripts/CEO Interview.txt", 30)
+
+        self.assertLessEqual(len(fitted), 30)
+        self.assertIn("...", fitted)
+        self.assertTrue(fitted.endswith("Interview.txt"))
 
 
 if __name__ == "__main__":
