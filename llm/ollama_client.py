@@ -12,7 +12,7 @@ import requests
 import sys
 from json import JSONDecoder
 
-DEFAULT_MODEL = "qwen3:8b"
+DEFAULT_MODEL = "gemma3:4b"
 DEFAULT_HOST = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
 DEFAULT_TIMEOUT = 180  # seconds — local models can be slow on first inference
 DEFAULT_CONTEXT_TOKENS = int(os.getenv("BITEBUILDER_NUM_CTX", "12288"))

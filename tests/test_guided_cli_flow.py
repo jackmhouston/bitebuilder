@@ -71,6 +71,12 @@ def fake_reader_for(sequence_plan_path: Path):
 
 
 class GuidedCliFlowTests(unittest.TestCase):
+    def test_prompt_with_default_strips_wrapping_quotes(self):
+        self.assertEqual(
+            bitebuilder.prompt_with_default("Path", None, input_func=lambda prompt: "'/tmp/example file.txt'"),
+            "/tmp/example file.txt",
+        )
+
     def test_guided_accept_path_uses_prompt_defaults_and_summarizes_plan(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)

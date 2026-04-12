@@ -2451,10 +2451,18 @@ def run_pipeline(
     }
 
 
+def strip_wrapping_quotes(value: str) -> str:
+    """Remove one pair of shell-style wrapping quotes from interactive input."""
+    value = (value or "").strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
+
+
 def prompt_with_default(prompt: str, default: str | None = None, *, input_func=input) -> str:
     """Prompt for a value, returning the default when the user submits empty input."""
     suffix = f" [{default}]" if default else ""
-    value = input_func(f"{prompt}{suffix}: ").strip()
+    value = strip_wrapping_quotes(input_func(f"{prompt}{suffix}: "))
     return value or (default or "")
 
 
