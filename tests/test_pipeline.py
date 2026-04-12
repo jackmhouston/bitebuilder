@@ -147,6 +147,10 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(result["response"]["selection_status"], "ok")
             self.assertTrue(Path(result["sequence_plan_path"]).exists())
             self.assertEqual(result["debug_files"]["sequence_plan"], result["sequence_plan_path"])
+            self.assertTrue(Path(result["debug_files"]["sequence_plan_summary"]).exists())
+            summary_text = Path(result["debug_files"]["sequence_plan_summary"]).read_text()
+            self.assertIn("Option option-1", summary_text)
+            self.assertIn("00:00:00:00 - 00:00:02:00", summary_text)
             self.assertEqual(result["output_files"][0]["sequence_plan_option_id"], "option-1")
             self.assertEqual(result["output_files"][1]["sequence_plan_option_id"], "option-2")
 

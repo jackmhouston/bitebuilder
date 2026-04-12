@@ -1912,6 +1912,12 @@ def write_output_files(
             with open(sequence_plan_path, "w", encoding="utf-8") as handle:
                 json.dump(sequence_plan, handle, indent=2)
             debug_files["sequence_plan"] = sequence_plan_path
+            sequence_plan_summary_path = os.path.join(output_dir, "_sequence_plan_summary.txt")
+            sequence_plan_obj = SequencePlan.from_dict(sequence_plan, transcript_segments=segments)
+            with open(sequence_plan_summary_path, "w", encoding="utf-8") as handle:
+                handle.write(summarize_sequence_plan(sequence_plan_obj))
+                handle.write("\n")
+            debug_files["sequence_plan_summary"] = sequence_plan_summary_path
 
     if response.get("selection_status") == "no_candidates":
         return [], debug_path, debug_files, sequence_plan_path
