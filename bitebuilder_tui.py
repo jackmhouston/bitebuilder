@@ -13,6 +13,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from llm.ollama_client import (
+    DEFAULT_HOST,
+    DEFAULT_MODEL,
+    DEFAULT_THINKING_MODE,
+    DEFAULT_TIMEOUT,
+)
+
 
 def _abspath(value: str | None) -> str:
     return os.path.abspath(os.path.expanduser(value or ""))
@@ -27,10 +34,10 @@ class TuiSession:
     xml_path: str | None = None
     plan_path: str | None = None
     output_dir: str = "./output"
-    model: str = "gemma3:4b"
-    host: str = "http://127.0.0.1:11434"
-    timeout: int = 120
-    thinking_mode: str = "auto"
+    model: str = DEFAULT_MODEL
+    host: str = DEFAULT_HOST
+    timeout: int = DEFAULT_TIMEOUT
+    thinking_mode: str = DEFAULT_THINKING_MODE
     option_id: str | None = None
     project_context: str = ""
     goal: str = ""

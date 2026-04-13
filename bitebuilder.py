@@ -2117,7 +2117,7 @@ def refine_sequence_plan(
     require_changed_selected_cuts: bool = False,
     refinement_retries: int = 1,
 ) -> dict:
-    """Refine a saved sequence plan with the configured Ollama model and render XML."""
+    """Refine a saved sequence plan with the configured local model and render XML."""
     source = parse_premiere_xml_safe(xml_text)
     try:
         segments = parse_transcript(
@@ -2407,9 +2407,9 @@ def run_pipeline(
         raise BiteBuilderError(build_validation_error(
             code="MODEL-UNAVAILABLE",
             error_type="runtime_dependency",
-            message="Failed to resolve Ollama model.",
-            expected_input_format="Available Ollama model and local host.",
-            next_action="Start Ollama and install the selected model.",
+            message="Failed to resolve local model.",
+            expected_input_format="Available Ollama or llama-server model and local host.",
+            next_action="Start the configured model runtime and verify the selected model.",
             stage="model",
             details={"cause": str(exc)},
         ))
@@ -3495,7 +3495,7 @@ Examples:
         '--thinking-mode',
         choices=['auto', 'on', 'off'],
         default=DEFAULT_THINKING_MODE,
-        help=f'Qwen thinking mode control (default: {DEFAULT_THINKING_MODE})'
+        help=f'Model thinking mode control (default: {DEFAULT_THINKING_MODE})'
     )
     parser.add_argument(
         '--sequence-plan',

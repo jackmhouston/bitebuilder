@@ -66,7 +66,7 @@ Deliverables:
 ## Notes
 
 - The current interchange format is Premiere XML/XMEML.
-- Real editorial generation requires a local Ollama model.
+- Real editorial generation requires a local model runtime (Gemma 4 via llama-server by default; Ollama is still supported).
 - The browser UI expects transcript and XML contents to be uploaded from the client, but it is inactive/low-priority for the current fundamentals track.
 - Future refinement should operate on a structured sequence-plan artifact before adding chat/UI commands.
 

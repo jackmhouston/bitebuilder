@@ -13,18 +13,25 @@ import requests
 import sys
 from json import JSONDecoder
 
-DEFAULT_MODEL = "gemma3:4b"
-DEFAULT_HOST = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
+DEFAULT_MODEL = (
+    os.getenv("BITEBUILDER_MODEL")
+    or os.getenv("BITEBUILDER_DEFAULT_MODEL")
+    or "gemma-4-E2B-it-Q8_0.gguf"
+)
+DEFAULT_HOST = (
+    os.getenv("BITEBUILDER_HOST")
+    or "http://127.0.0.1:18084"
+)
 DEFAULT_TIMEOUT = 180  # seconds — local models can be slow on first inference
-DEFAULT_CONTEXT_TOKENS = int(os.getenv("BITEBUILDER_NUM_CTX", "12288"))
-DEFAULT_THINKING_MODE = os.getenv("BITEBUILDER_THINKING_MODE", "auto")
+DEFAULT_CONTEXT_TOKENS = int(os.getenv("BITEBUILDER_NUM_CTX", "8192"))
+DEFAULT_THINKING_MODE = os.getenv("BITEBUILDER_THINKING_MODE", "off")
 DEFAULT_SELECTION_TEMPERATURE = float(os.getenv("BITEBUILDER_SELECTION_TEMPERATURE", "0.0"))
 DEFAULT_SELECTION_SEED = int(os.getenv("BITEBUILDER_SELECTION_SEED", "0"))
 DEFAULT_TEXT_TEMPERATURE = float(os.getenv("BITEBUILDER_TEXT_TEMPERATURE", "0.3"))
 DEFAULT_TEXT_SEED = int(os.getenv("BITEBUILDER_TEXT_SEED", "0"))
 DEFAULT_JSON_PREDICT_TOKENS = 2048
 DEFAULT_TEXT_PREDICT_TOKENS = 768
-FALLBACK_HOSTS = ("http://127.0.0.1:11434", "http://127.0.0.1:11435")
+FALLBACK_HOSTS = ("http://127.0.0.1:18084", "http://127.0.0.1:11434", "http://127.0.0.1:11435")
 VALID_THINKING_MODES = {"auto", "on", "off"}
 JSON_REPAIR_SYSTEM_PROMPT = """You repair malformed JSON.
 
@@ -34,7 +41,7 @@ Do not change the intended meaning or invent new content beyond what is needed t
 
 
 def normalize_host(host: str | None) -> str:
-    """Normalize Ollama host strings to a full http URL."""
+    """Normalize local model host strings to a full http URL."""
     host = (host or DEFAULT_HOST).strip()
     if not host.startswith(("http://", "https://")):
         host = f"http://{host}"
@@ -42,9 +49,15 @@ def normalize_host(host: str | None) -> str:
 
 
 def host_candidates(preferred_host: str | None = None) -> list[str]:
-    """Return ordered unique Ollama hosts to probe."""
+    """Return ordered unique local model hosts to probe."""
     candidates = []
-    for host in [preferred_host, os.getenv("OLLAMA_HOST"), DEFAULT_HOST, *FALLBACK_HOSTS]:
+    for host in [
+        preferred_host,
+        os.getenv("BITEBUILDER_HOST"),
+        DEFAULT_HOST,
+        os.getenv("OLLAMA_HOST"),
+        *FALLBACK_HOSTS,
+    ]:
         if not host:
             continue
         normalized = normalize_host(host)
@@ -451,4 +464,4 @@ def resolve_host(
     if connected_hosts:
         return connected_hosts[0]
 
-    raise ConnectionError("Cannot connect to any local Ollama host.")
+    raise ConnectionError("Cannot connect to any local model host.")

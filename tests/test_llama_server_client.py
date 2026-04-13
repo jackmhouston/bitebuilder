@@ -1,3 +1,5 @@
+import importlib
+import os
 import unittest
 from unittest.mock import Mock, patch
 
@@ -7,6 +9,35 @@ from llm import ollama_client
 
 
 class LlamaServerClientTests(unittest.TestCase):
+    def test_default_config_targets_local_gemma4_llama_server(self):
+        try:
+            with patch.dict(os.environ, {}, clear=True):
+                reloaded = importlib.reload(ollama_client)
+
+                self.assertEqual(reloaded.DEFAULT_MODEL, "gemma-4-E2B-it-Q8_0.gguf")
+                self.assertEqual(reloaded.DEFAULT_HOST, "http://127.0.0.1:18084")
+                self.assertEqual(reloaded.DEFAULT_CONTEXT_TOKENS, 8192)
+                self.assertEqual(
+                    reloaded.normalize_thinking_mode(reloaded.DEFAULT_THINKING_MODE),
+                    "off",
+                )
+                self.assertIn("http://127.0.0.1:18084", reloaded.host_candidates())
+        finally:
+            importlib.reload(ollama_client)
+
+    def test_ollama_host_does_not_displace_bitebuilder_gemma4_default(self):
+        try:
+            with patch.dict(os.environ, {"OLLAMA_HOST": "http://127.0.0.1:11434"}, clear=True):
+                reloaded = importlib.reload(ollama_client)
+
+                self.assertEqual(reloaded.DEFAULT_HOST, "http://127.0.0.1:18084")
+                self.assertEqual(
+                    reloaded.host_candidates()[:2],
+                    ["http://127.0.0.1:18084", "http://127.0.0.1:11434"],
+                )
+        finally:
+            importlib.reload(ollama_client)
+
     def test_extract_response_text_reads_openai_chat_shape(self):
         result = {
             "choices": [

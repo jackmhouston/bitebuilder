@@ -600,9 +600,9 @@ def create_app() -> Flask:
             return validation_error_response(build_validation_error(
                 code="CHAT-HOST-UNAVAILABLE",
                 error_type="runtime_dependency",
-                message="Could not connect to Ollama host.",
-                expected_input_format="Reachable Ollama host/port with model access.",
-                next_action="Start Ollama and check host port in /api/models.",
+                message="Could not connect to local model host.",
+                expected_input_format="Reachable Ollama or llama-server host/port with model access.",
+                next_action="Start the configured model runtime and check host port in /api/models.",
                 stage="model",
                 details={"cause": str(exc)},
             ))

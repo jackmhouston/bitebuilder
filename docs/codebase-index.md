@@ -3,7 +3,7 @@
 ## Runtime Flow
 1. `bitebuilder.py` parses the transcript and Premiere XML.
 2. `llm/prompts.py` builds the editorial prompt and validates the JSON reply.
-3. `llm/ollama_client.py` sends the request to Ollama and applies Qwen thinking-mode controls.
+3. `llm/ollama_client.py` sends the request to the configured local model runtime (Gemma 4 via llama-server by default; Ollama is still supported) and applies thinking-mode controls.
 4. `generator/xmeml.py` converts approved cuts into Premiere-importable XMEML.
 5. The CLI writes one XML per edit option plus `_llm_response.json`.
 6. `webapp.py` layers a local browser UI on top of the same pipeline with routed intake, context, copilot, and output pages plus the same chat and generation endpoints.
