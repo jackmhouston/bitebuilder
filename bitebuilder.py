@@ -62,6 +62,7 @@ from llm.ollama_client import (
 
 BITEBUILDER_VERSION = "0.1.0"
 PIPELINE_SCHEMA_VERSION = "run-metadata/1"
+GO_TUI_BRIDGE_SCHEMA_VERSION = "go_tui_bridge.v1"
 RUN_METADATA_SOURCE_HASH_VERSION = "source-hash/1"
 TRANSCRIPT_PARSER_VERSION = "transcript-parser/1"
 TRANSCRIPT_VALIDATOR_VERSION = "transcript-validator/1"
@@ -2828,6 +2829,327 @@ def _format_transcript_excerpt(segments, *, start_index: int = 0, count: int = 1
     return "\n\n".join(lines) if lines else "No matching transcript segments."
 
 
+def _bridge_success(operation: str, data: dict) -> dict:
+    return {
+        "ok": True,
+        "schema_version": GO_TUI_BRIDGE_SCHEMA_VERSION,
+        "operation": operation,
+        "data": data,
+    }
+
+
+def _bridge_error(operation: str, error: dict) -> dict:
+    return {
+        "ok": False,
+        "schema_version": GO_TUI_BRIDGE_SCHEMA_VERSION,
+        "operation": operation,
+        "error": error,
+    }
+
+
+def _bridge_validation_error(
+    *,
+    code: str,
+    message: str,
+    next_action: str,
+    operation: str,
+    details: dict | None = None,
+) -> BiteBuilderError:
+    return BiteBuilderError(build_validation_error(
+        code=code,
+        error_type="invalid_go_tui_bridge_request",
+        message=message,
+        expected_input_format="python bitebuilder.py --go-tui-bridge <setup|media|plan|transcript|bite> [read-only args]",
+        next_action=next_action,
+        stage=f"go_tui_bridge:{operation}",
+        recoverable=True,
+        details=details,
+    ))
+
+
+def _bridge_require_path(args, field_name: str, operation: str) -> str:
+    value = getattr(args, field_name) or ""
+    if not value:
+        cli_name = "--sequence-plan" if field_name == "sequence_plan" else f"--{field_name.replace('_', '-')}"
+        raise _bridge_validation_error(
+            code="GO-TUI-BRIDGE-MISSING-PATH",
+            message=f"{cli_name} is required for bridge operation '{operation}'.",
+            next_action=f"Pass {cli_name} with operation '{operation}' and retry.",
+            operation=operation,
+            details={"field": field_name, "operation": operation},
+        )
+    return value
+
+
+def _bridge_load_media(args, operation: str) -> tuple[str, str, object, list]:
+    transcript_text = read_text_file(_bridge_require_path(args, "transcript", operation))
+    xml_text = read_text_file(_bridge_require_path(args, "xml", operation))
+    source = parse_premiere_xml_safe(xml_text)
+    try:
+        segments = parse_transcript(
+            transcript_text,
+            strict=True,
+            timebase=source.timebase,
+            ntsc=source.ntsc,
+        )
+    except TranscriptValidationError as exc:
+        raise build_transcript_timecode_error(exc.errors)
+    return transcript_text, xml_text, source, segments
+
+
+def _bridge_segment_payload(segment, index: int) -> dict:
+    data = segment.to_dict()
+    data["index"] = index
+    return data
+
+
+def _bridge_segments_payload(segments, *, start_index: int = 0, count: int = 12, query: str | None = None) -> dict:
+    safe_start = max(0, start_index)
+    safe_count = max(1, count)
+    query_text = (query or "").strip().lower()
+    if query_text:
+        matches = [
+            (index, segment)
+            for index, segment in enumerate(segments)
+            if query_text in segment.text.lower() or query_text in segment.speaker.lower()
+        ][:safe_count]
+    else:
+        matches = list(enumerate(segments))[safe_start:safe_start + safe_count]
+    return {
+        "total_count": len(segments),
+        "start_index": safe_start,
+        "count": len(matches),
+        "query": query or "",
+        "segments": [_bridge_segment_payload(segment, index) for index, segment in matches],
+        "display_text": _format_transcript_excerpt(
+            segments,
+            start_index=safe_start,
+            count=safe_count,
+            query=query,
+        ),
+    }
+
+
+def _bridge_hydrate_plan_payload(plan_payload: dict, segments) -> dict:
+    hydrated = json.loads(json.dumps(plan_payload))
+    for option in hydrated.get("options", []):
+        for bite in option.get("bites", []):
+            segment_index = bite.get("segment_index")
+            if isinstance(segment_index, int) and 0 <= segment_index < len(segments):
+                segment = segments[segment_index]
+                bite.setdefault("speaker", segment.speaker)
+                bite.setdefault("text", segment.text)
+    return hydrated
+
+
+def _bridge_plan_payload(args, operation: str, source, segments) -> tuple[dict, SequencePlan]:
+    sequence_plan_text = read_text_file(_bridge_require_path(args, "sequence_plan", operation))
+    try:
+        raw_payload = json.loads(sequence_plan_text)
+    except json.JSONDecodeError as exc:
+        raise BiteBuilderError(build_validation_error(
+            code="SEQUENCE-PLAN-JSON-INVALID",
+            error_type="invalid_sequence_plan",
+            message="Sequence plan JSON is invalid.",
+            expected_input_format="A valid _sequence_plan.json file.",
+            next_action="Pass a valid sequence plan JSON artifact and retry.",
+            stage=f"go_tui_bridge:{operation}",
+            recoverable=True,
+            details={"cause": str(exc)},
+        )) from exc
+    hydrated_payload = _bridge_hydrate_plan_payload(raw_payload, segments)
+    try:
+        plan = SequencePlan.from_dict(hydrated_payload, transcript_segments=segments)
+    except SequencePlanValidationError as exc:
+        raise BiteBuilderError(build_validation_error(
+            code="SEQUENCE-PLAN-INVALID",
+            error_type="invalid_sequence_plan",
+            message="Sequence plan did not validate against the transcript.",
+            expected_input_format="A sequence plan whose bites reference exact transcript segment indexes and timecodes.",
+            next_action="Fix the sequence plan segment indexes/timecodes/statuses and retry.",
+            stage=f"go_tui_bridge:{operation}",
+            recoverable=True,
+            details={"cause": str(exc)},
+        )) from exc
+    _ = source
+    return hydrated_payload, plan
+
+
+def _bridge_option_payload(plan: SequencePlan, option_id: str | None = None, *, source=None) -> dict:
+    option = plan.option(option_id)
+    timebase = getattr(source, "timebase", 24)
+    ntsc = getattr(source, "ntsc", True)
+    selected_bites = option.selected_bites()
+    return {
+        "option_id": option.option_id,
+        "name": option.name,
+        "description": option.description,
+        "estimated_duration_seconds": option.estimated_duration_seconds,
+        "bite_count": len(option.bites),
+        "selected_bite_count": len(selected_bites),
+        "selected_duration_seconds": _sequence_plan_option_duration(option, timebase=timebase, ntsc=ntsc),
+    }
+
+
+def _bridge_find_bite(plan: SequencePlan, option_id: str | None, args):
+    option = plan.option(option_id)
+    if args.bridge_bite_id:
+        for bite in option.bites:
+            if bite.bite_id == args.bridge_bite_id:
+                return bite
+        raise _bridge_validation_error(
+            code="GO-TUI-BRIDGE-BITE-NOT-FOUND",
+            message=f"Bite id not found: {args.bridge_bite_id}",
+            next_action="Pass an existing --bridge-bite-id from the plan payload.",
+            operation="bite",
+            details={"bite_id": args.bridge_bite_id, "option_id": option.option_id},
+        )
+    if args.bridge_segment_index is not None:
+        for bite in option.bites:
+            if bite.segment_index == args.bridge_segment_index:
+                return bite
+        raise _bridge_validation_error(
+            code="GO-TUI-BRIDGE-BITE-NOT-FOUND",
+            message=f"No bite references segment index {args.bridge_segment_index}.",
+            next_action="Pass a segment index present in the selected option.",
+            operation="bite",
+            details={"segment_index": args.bridge_segment_index, "option_id": option.option_id},
+        )
+    if args.bridge_selected_position is not None:
+        selected_bites = option.selected_bites()
+        if args.bridge_selected_position < 1 or args.bridge_selected_position > len(selected_bites):
+            raise _bridge_validation_error(
+                code="GO-TUI-BRIDGE-BITE-NOT-FOUND",
+                message=f"--bridge-selected-position must be between 1 and {len(selected_bites)}.",
+                next_action="Pass a one-based selected bite position from the option summary.",
+                operation="bite",
+                details={"selected_position": args.bridge_selected_position, "option_id": option.option_id},
+            )
+        return selected_bites[args.bridge_selected_position - 1]
+    selected_bites = option.selected_bites()
+    return selected_bites[0] if selected_bites else (option.bites[0] if option.bites else None)
+
+
+def build_go_tui_bridge_response(args) -> dict:
+    """Build a read-only JSON response for the Go TUI prototype bridge."""
+    operation = (args.go_tui_bridge or "").strip().lower()
+    if operation not in {"setup", "media", "plan", "transcript", "bite"}:
+        raise _bridge_validation_error(
+            code="GO-TUI-BRIDGE-UNKNOWN-OPERATION",
+            message=f"Unknown Go TUI bridge operation: {args.go_tui_bridge!r}",
+            next_action="Use one of: setup, media, plan, transcript, bite.",
+            operation=operation or "unknown",
+            details={"operation": args.go_tui_bridge},
+        )
+
+    if operation == "setup":
+        return _bridge_success(operation, {
+            "version": BITEBUILDER_VERSION,
+            "capabilities": {
+                "transport": "request_response_json",
+                "mutates_output": False,
+                "operations": ["setup", "media", "plan", "transcript", "bite"],
+            },
+            "defaults": {
+                "model": args.model,
+                "host": args.host,
+                "timeout": args.timeout,
+                "thinking_mode": args.thinking_mode,
+                "output_dir": args.output,
+            },
+            "paths": {
+                "transcript": args.transcript,
+                "xml": args.xml,
+                "sequence_plan": args.sequence_plan,
+            },
+        })
+
+    transcript_text, xml_text, source, segments = _bridge_load_media(args, operation)
+    _ = (transcript_text, xml_text)
+    if operation == "media":
+        return _bridge_success(operation, {
+            "source": source.to_dict(),
+            "transcript": _bridge_segments_payload(
+                segments,
+                start_index=args.bridge_start_index,
+                count=args.bridge_count,
+                query=args.bridge_query,
+            ),
+        })
+
+    if operation == "transcript":
+        return _bridge_success(operation, {
+            "transcript": _bridge_segments_payload(
+                segments,
+                start_index=args.bridge_start_index,
+                count=args.bridge_count,
+                query=args.bridge_query,
+            ),
+        })
+
+    plan_payload, plan = _bridge_plan_payload(args, operation, source, segments)
+    option = plan.option(args.option_id)
+    if operation == "plan":
+        return _bridge_success(operation, {
+            "source": source.to_dict(),
+            "plan": plan_payload,
+            "options": [
+                _bridge_option_payload(plan, item.option_id, source=source)
+                for item in plan.options
+            ],
+            "current_option_id": option.option_id,
+            "summary_text": summarize_sequence_plan(
+                plan,
+                args.option_id,
+                timebase=source.timebase,
+                ntsc=source.ntsc,
+            ),
+        })
+
+    bite = _bridge_find_bite(plan, args.option_id, args)
+    if bite is None:
+        raise _bridge_validation_error(
+            code="GO-TUI-BRIDGE-BITE-NOT-FOUND",
+            message="The selected option has no bites.",
+            next_action="Choose a sequence-plan option that contains bites.",
+            operation=operation,
+            details={"option_id": option.option_id},
+        )
+    segment = segments[bite.segment_index]
+    return _bridge_success(operation, {
+        "source": source.to_dict(),
+        "option": _bridge_option_payload(plan, option.option_id, source=source),
+        "bite": bite.to_dict(),
+        "segment": _bridge_segment_payload(segment, bite.segment_index),
+        "duration_seconds": estimate_duration_seconds(bite.tc_in, bite.tc_out, source.timebase, source.ntsc),
+    })
+
+
+def run_go_tui_bridge(args) -> int:
+    """Print exactly one bridge envelope as stdout JSON and return a process status."""
+    operation = (args.go_tui_bridge or "unknown").strip().lower() or "unknown"
+    try:
+        envelope = build_go_tui_bridge_response(args)
+        status = 0
+    except BiteBuilderError as exc:
+        envelope = _bridge_error(operation, exc.error)
+        status = 1
+    except Exception as exc:
+        envelope = _bridge_error(operation, build_validation_error(
+            code="GO-TUI-BRIDGE-RUNTIME-FAILED",
+            error_type="runtime_go_tui_bridge_failed",
+            message="Go TUI bridge failed before completing the read-only request.",
+            expected_input_format="Valid bridge operation and readable BiteBuilder input files.",
+            next_action="Check the bridge arguments and input files, then retry.",
+            stage=f"go_tui_bridge:{operation}",
+            recoverable=True,
+            details={"cause": str(exc)},
+        ))
+        status = 1
+    print(json.dumps(envelope, sort_keys=True, separators=(",", ":")))
+    return status
+
+
 def _write_and_render_builder_plan(
     *,
     plan: SequencePlan,
@@ -3199,6 +3521,9 @@ def main():
 
     args = parse_args()
 
+    if args.go_tui_bridge:
+        sys.exit(run_go_tui_bridge(args))
+
     print("=" * 60)
     print("  BiteBuilder v1")
     print("  AI-Powered Soundbite Selector for Premiere Pro")
@@ -3492,6 +3817,14 @@ Examples:
         help='Open the no-dependency terminal UI for selecting inputs and building a sequence plan'
     )
     parser.add_argument(
+        '--go-tui-bridge',
+        '--go-tui-bridge-command',
+        '--bridge-command',
+        dest='go_tui_bridge',
+        metavar='OPERATION',
+        help='Emit one read-only JSON envelope for the Go TUI prototype (setup, media, plan, transcript, bite)'
+    )
+    parser.add_argument(
         '--thinking-mode',
         choices=['auto', 'on', 'off'],
         default=DEFAULT_THINKING_MODE,
@@ -3535,13 +3868,44 @@ Examples:
         default=1,
         help='Retries after a structurally valid refinement fails editorial constraints (default: 1)'
     )
+    parser.add_argument(
+        '--bridge-start-index',
+        type=int,
+        default=0,
+        help='Go TUI bridge transcript window start index (read-only)'
+    )
+    parser.add_argument(
+        '--bridge-count',
+        type=int,
+        default=12,
+        help='Go TUI bridge transcript window size (read-only)'
+    )
+    parser.add_argument(
+        '--bridge-query',
+        default='',
+        help='Go TUI bridge transcript search query (read-only)'
+    )
+    parser.add_argument(
+        '--bridge-bite-id',
+        help='Go TUI bridge bite id selector for the bite operation'
+    )
+    parser.add_argument(
+        '--bridge-segment-index',
+        type=int,
+        help='Go TUI bridge segment index selector for the bite operation'
+    )
+    parser.add_argument(
+        '--bridge-selected-position',
+        type=int,
+        help='Go TUI bridge one-based selected bite selector for the bite operation'
+    )
 
     args = parser.parse_args()
     if args.build and not args.sequence_plan:
         parser.error('--build requires --sequence-plan')
     if args.build and args.refine_instruction:
         parser.error('--build cannot be combined with --refine-instruction')
-    if not args.guided and not args.tui and not args.sequence_plan:
+    if not args.guided and not args.tui and not args.go_tui_bridge and not args.sequence_plan:
         missing = []
         if not args.transcript:
             missing.append('--transcript')
@@ -3552,7 +3916,7 @@ Examples:
         if missing:
             parser.error(f"the following arguments are required: {', '.join(missing)}")
     if args.sequence_plan and (not args.transcript or not args.xml):
-        if not args.tui:
+        if not args.tui and not args.go_tui_bridge:
             parser.error('--transcript and --xml are required with --sequence-plan')
     return args
 

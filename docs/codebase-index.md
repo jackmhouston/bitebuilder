@@ -21,6 +21,7 @@
 | `generator/xmeml.py` | Builds linked video + stereo audio XMEML sequences |
 | `llm/prompts.py` | Houses the system prompt and JSON response validation |
 | `llm/ollama_client.py` | Thin Ollama HTTP client with JSON parsing |
+| `docs/adr-go-tui-generation-transport.md` | Records the Go TUI Phase 4 transport decision: NDJSON subprocess events for future generation, with read-only request/response JSON preserved for Phases 1-3 |
 
 ## External Dependencies
 - Python 3.10+
