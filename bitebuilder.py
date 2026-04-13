@@ -22,7 +22,7 @@ import re
 import sys
 import xml.etree.ElementTree as ET
 
-from parser.transcript import parse_transcript, get_valid_timecodes
+from parser.transcript import parse_transcript, get_valid_timecodes, format_for_llm
 from parser.transcript import TranscriptValidationError
 from parser.premiere_xml import parse_premiere_xml_string
 from generator.xmeml import generate_sequence, build_deterministic_sequence_id
@@ -38,6 +38,7 @@ from generator.sequence_plan_constraints import evaluate_sequence_plan_constrain
 from llm.prompts import (
     SYSTEM_PROMPT,
     EDITORIAL_DIRECTION_SYSTEM_PROMPT,
+    CHAT_SYSTEM_PROMPT,
     build_editorial_direction_prompt,
     build_user_prompt,
     validate_llm_response,
@@ -2859,7 +2860,7 @@ def _bridge_validation_error(
         code=code,
         error_type="invalid_go_tui_bridge_request",
         message=message,
-        expected_input_format="python bitebuilder.py --go-tui-bridge <setup|media|plan|transcript|bite> [read-only args]",
+        expected_input_format="python bitebuilder.py --go-tui-bridge <setup|media|plan|transcript|bite|assistant> [args]",
         next_action=next_action,
         stage=f"go_tui_bridge:{operation}",
         recoverable=True,
@@ -3030,14 +3031,53 @@ def _bridge_find_bite(plan: SequencePlan, option_id: str | None, args):
     return selected_bites[0] if selected_bites else (option.bites[0] if option.bites else None)
 
 
+def _bridge_assistant_prompt(*, segments, source, brief: str, project_context: str = "") -> str:
+    """Build a line-by-line editorial assistant prompt for the live Go TUI bridge."""
+    source_payload = source.to_dict() if hasattr(source, "to_dict") else {}
+    current_brief = brief.strip() or "No creative brief has been provided yet."
+    sections = [
+        "## TASK",
+        "Read the transcript line by line using every segment index, exact timecode, speaker label, and dialogue below. "
+        "Act as BiteBuilder's model assistant before XML generation.",
+        "",
+        "## SOURCE XML SUMMARY",
+        json.dumps(source_payload, indent=2, sort_keys=True),
+        "",
+        "## CURRENT CREATIVE BRIEF",
+        current_brief,
+    ]
+    if project_context.strip():
+        sections.extend(["", "## PROJECT CONTEXT", project_context.strip()])
+    sections.extend([
+        "",
+        "## TRANSCRIPT LINE BY LINE",
+        format_for_llm(segments),
+        "",
+        "## RESPONSE FORMAT",
+        "Return plain text with these exact headings:",
+        "Suggested Creative Brief:",
+        "Why This Direction Works:",
+        "Candidate Story Beats:",
+        "Prompt Tuning Notes:",
+        "",
+        "Rules:",
+        "- The suggested creative brief should be directly usable as the next generation brief.",
+        "- Cite exact segment indexes like [12] and timecodes for the best supporting moments.",
+        "- Prefer a cohesive narrative arc, not a loose list of topics.",
+        "- Keep the response concise enough to fit in the TUI.",
+        "- Do not write XML and do not invent transcript content.",
+    ])
+    return "\n".join(sections)
+
+
 def build_go_tui_bridge_response(args) -> dict:
     """Build a read-only JSON response for the Go TUI prototype bridge."""
     operation = (args.go_tui_bridge or "").strip().lower()
-    if operation not in {"setup", "media", "plan", "transcript", "bite"}:
+    if operation not in {"setup", "media", "plan", "transcript", "bite", "assistant"}:
         raise _bridge_validation_error(
             code="GO-TUI-BRIDGE-UNKNOWN-OPERATION",
             message=f"Unknown Go TUI bridge operation: {args.go_tui_bridge!r}",
-            next_action="Use one of: setup, media, plan, transcript, bite.",
+            next_action="Use one of: setup, media, plan, transcript, bite, assistant.",
             operation=operation or "unknown",
             details={"operation": args.go_tui_bridge},
         )
@@ -3048,7 +3088,7 @@ def build_go_tui_bridge_response(args) -> dict:
             "capabilities": {
                 "transport": "request_response_json",
                 "mutates_output": False,
-                "operations": ["setup", "media", "plan", "transcript", "bite"],
+                "operations": ["setup", "media", "plan", "transcript", "bite", "assistant"],
             },
             "defaults": {
                 "model": args.model,
@@ -3085,6 +3125,43 @@ def build_go_tui_bridge_response(args) -> dict:
                 count=args.bridge_count,
                 query=args.bridge_query,
             ),
+        })
+
+    if operation == "assistant":
+        suggestion_debug = {}
+        prompt = _bridge_assistant_prompt(
+            segments=segments,
+            source=source,
+            brief=args.brief or "",
+            project_context=getattr(args, "project_context", "") or "",
+        )
+        resolved_host, available_models = resolve_host(model=args.model, preferred_host=args.host)
+        suggestion = generate_text(
+            system_prompt=CHAT_SYSTEM_PROMPT,
+            user_prompt=prompt,
+            model=args.model,
+            host=resolved_host,
+            timeout=args.timeout,
+            thinking_mode=args.thinking_mode,
+            max_tokens=900,
+            debug=suggestion_debug,
+        )
+        return _bridge_success(operation, {
+            "suggestion": suggestion,
+            "model": {
+                "requested_id": args.model,
+                "resolved_id": args.model,
+                "host": resolved_host,
+                "available_models": available_models,
+                "thinking_mode": normalize_thinking_mode(args.thinking_mode),
+            },
+            "transcript": {
+                "segment_count": len(segments),
+                "line_by_line_format": "segment_index + exact timecode + speaker + dialogue",
+            },
+            "source": source.to_dict(),
+            "prompt_preview": prompt[:2000],
+            "raw_text": suggestion_debug.get("raw_text", ""),
         })
 
     plan_payload, plan = _bridge_plan_payload(args, operation, source, segments)
@@ -3822,7 +3899,7 @@ Examples:
         '--bridge-command',
         dest='go_tui_bridge',
         metavar='OPERATION',
-        help='Emit one read-only JSON envelope for the Go TUI prototype (setup, media, plan, transcript, bite)'
+        help='Emit one JSON envelope for the Go TUI bridge (setup, media, plan, transcript, bite, assistant)'
     )
     parser.add_argument(
         '--thinking-mode',

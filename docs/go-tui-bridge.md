@@ -1,11 +1,12 @@
-# Go TUI bridge (Phase 1-3 read-only seam)
+# Go TUI bridge
 
 This bridge gives the Go TUI prototype a stable, non-server way to inspect
-BiteBuilder state without importing Python internals or mutating output files.
-It is intentionally request/response JSON over a Python subprocess for the
-read-only prototype screens. Future model-backed generation progress should use
-an NDJSON subprocess event stream after that transport is documented in the
-Phase 4 ADR.
+BiteBuilder state and ask the existing Python backend for model-assistant help
+without importing Python internals or mutating output files. It is intentionally
+request/response JSON over a Python subprocess for setup/media/plan/transcript/
+bite screens and for the lightweight `assistant` creative-brief rewrite. Future
+model-backed sequence generation progress should use an NDJSON subprocess event
+stream after that transport is documented in the Phase 4 ADR.
 
 ## Command shape
 
@@ -23,6 +24,10 @@ python bitebuilder.py --go-tui-bridge plan \
   --transcript interview.txt \
   --xml premiere-export.xml \
   --sequence-plan output/_sequence_plan.json
+python bitebuilder.py --go-tui-bridge assistant \
+  --transcript interview.txt \
+  --xml premiere-export.xml \
+  --brief "short proof point with a clear button"
 ```
 
 The normal Python TUI remains unchanged:
@@ -71,7 +76,7 @@ All bridge errors use the existing BiteBuilder structured error shape inside the
 outer envelope. Invalid bridge operations are reported as JSON instead of using
 `argparse` choices so stdout remains machine-readable.
 
-## Read-only operations
+## Operations
 
 | Operation | Required args | Purpose |
 | --- | --- | --- |
@@ -80,6 +85,7 @@ outer envelope. Invalid bridge operations are reported as JSON instead of using
 | `transcript` | `--transcript`, `--xml` | Return a transcript viewport for path/file selection and search screens. |
 | `plan` | `--transcript`, `--xml`, `--sequence-plan` | Validate and hydrate a sequence plan, returning option summaries and display text. |
 | `bite` | `--transcript`, `--xml`, `--sequence-plan` | Return one bite and its transcript segment for a detail viewport. |
+| `assistant` | `--transcript`, `--xml`, optional `--brief` | Send parsed transcript/XML context to the configured Python model client and return a suggested creative-brief rewrite plus story beats. |
 
 Optional read-only selectors:
 
@@ -97,7 +103,10 @@ first bite if an option has no selected bites.
 ## Mutation boundary
 
 The bridge does not call `run_pipeline`, `render_sequence_plan`,
-`refine_sequence_plan`, or any builder edit function. It only reads supplied
-files, parses/validates them in memory, and prints JSON. This keeps Phase 1-3
-safe for a Go TUI prototype while preserving the existing Python CLI and
-`--tui` behavior.
+`refine_sequence_plan`, or any builder edit function. Setup/media/plan/
+transcript/bite only read supplied files, parse/validate them in memory, and
+print JSON. The `assistant` operation additionally calls the configured Python
+model client (`generate_text`) to produce a creative-brief rewrite, but still
+does not render XML, edit a sequence plan, or write output files. This keeps the
+Go TUI prototype safe while allowing live model-assistant testing before the
+future NDJSON generation transport is implemented.

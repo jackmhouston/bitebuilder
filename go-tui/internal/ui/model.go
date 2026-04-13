@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -24,6 +25,7 @@ const fieldCount = 4
 
 type firstPassRunner interface {
 	RunFirstPass(context.Context, bridge.Config) (bridge.RunResult, error)
+	RunBridgeOperation(context.Context, bridge.Config, string) (bridge.RunResult, error)
 }
 
 type screen int
@@ -61,6 +63,12 @@ type nativeFilePickErrorMsg struct {
 	err    error
 }
 
+type bridgeFinishedMsg struct {
+	operation string
+	result    bridge.RunResult
+	err       error
+}
+
 // Model is a read-only Bubble Tea prototype for BiteBuilder's Go TUI lane.
 type Model struct {
 	ctx    context.Context
@@ -74,15 +82,17 @@ type Model struct {
 	viewport   viewport.Model
 	picker     filepicker.Model
 
-	activeScreen  screen
-	picking       pickTarget
-	focus         int
-	width         int
-	height        int
-	status        string
-	helpOpen      bool
-	bridgeError   *bridgeErrorState
-	bridgePreview string
+	activeScreen    screen
+	picking         pickTarget
+	focus           int
+	width           int
+	height          int
+	status          string
+	helpOpen        bool
+	bridgeError     *bridgeErrorState
+	bridgePreview   string
+	assistantResult string
+	bridgeRunning   bool
 }
 
 // New constructs the read-only Go TUI model with defaults from bridge.Config.
@@ -124,7 +134,7 @@ func New(ctx context.Context, runner firstPassRunner, config bridge.Config) Mode
 		viewport:     vp,
 		picker:       picker,
 		activeScreen: screenWelcome,
-		status:       "Read-only prototype. Tab changes focus; T browses .txt; X browses .xml; v validates; h opens help.",
+		status:       "Model-assistant prototype. Tab changes focus; T opens .txt; X opens .xml; v asks model; h opens help.",
 	}
 	model.refreshViewport()
 	return model
@@ -147,6 +157,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.picking = msg.target
 		m = m.applyPickedFile(msg.path)
 		m.activeScreen = screenFiles
+		m.refreshViewport()
+		return m, nil
+	case bridgeFinishedMsg:
+		m = m.handleBridgeFinished(msg)
 		m.refreshViewport()
 		return m, nil
 	case nativeFilePickErrorMsg:
@@ -194,6 +208,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		if m.activeScreen == screenFiles && !m.helpOpen && m.focus == 2 {
+			switch {
+			case msg.Type == tea.KeyCtrlC:
+				return m, tea.Quit
+			case key.Matches(msg, keys.next):
+				m = m.focusNext()
+				m.status = "File/setup field focus changed."
+				m.refreshViewport()
+				return m, nil
+			case key.Matches(msg, keys.prev):
+				m = m.focusPrev()
+				m.status = "File/setup field focus changed."
+				m.refreshViewport()
+				return m, nil
+			default:
+				var cmd tea.Cmd
+				m.brief, cmd = m.brief.Update(msg)
+				m.refreshViewport()
+				return m, cmd
+			}
+		}
+
 		switch {
 		case key.Matches(msg, keys.quit):
 			return m, tea.Quit
@@ -219,9 +255,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshViewport()
 			return m, nil
 		case key.Matches(msg, keys.validate):
-			m = m.validateBridgeRequest()
-			m.refreshViewport()
-			return m, nil
+			return m.runAssistantBridge()
 		case key.Matches(msg, keys.browseTranscript):
 			return m.startFileSelection(pickTranscript, []string{".txt"}, m.transcript.Value())
 		case key.Matches(msg, keys.browseXML):
@@ -282,7 +316,7 @@ func (m Model) View() string {
 		lipgloss.Left,
 		titleStyle.Render("BiteBuilder Go TUI"),
 		subtitleStyle.Render("Read-only prototype for planning, reviewing, and validating the Python bridge request."),
-		navStyle.Render("1 Welcome • 2 Files • 3 Plan • 4 Bite • 5 Transcript • T Browse TXT • X Browse XML • v Validate • h Help • q Quit"),
+		navStyle.Render("1 Welcome • 2 Files • 3 Plan • 4 Bite • 5 Transcript • T TXT • X XML • v Ask Model • h Help • q Quit"),
 	)
 
 	body := boxStyle.Render(m.viewport.View())
@@ -295,7 +329,7 @@ func (m Model) View() string {
 		top,
 		body,
 		statusStyle.Render(m.status),
-		helpStyle.Render("Read-only mode: validation previews the bridge request; it never invokes bitebuilder.py or writes output."),
+		helpStyle.Render("Model-assistant mode: v runs the Python bridge/model for a brief rewrite; export/generation remains gated."),
 	)
 }
 
@@ -474,25 +508,68 @@ func (m Model) applyPickedFile(path string) Model {
 	return m
 }
 
-func (m Model) validateBridgeRequest() Model {
+func (m Model) runAssistantBridge() (Model, tea.Cmd) {
 	config := m.currentConfig()
-	args, err := config.BuildFirstPassArgs()
+	args, err := config.BuildReadOnlyBridgeArgs("assistant")
 	if err != nil {
 		m.bridgePreview = ""
+		m.assistantResult = ""
 		m.bridgeError = &bridgeErrorState{
-			Operation: "validate first-pass bridge request",
+			Operation: "assistant",
 			Code:      "invalid_request",
 			Message:   err.Error(),
-			Hint:      "Complete transcript, XML, brief, repository, Python, and timeout inputs before enabling generation.",
+			Hint:      "Choose transcript and XML files before asking the model assistant for a creative brief rewrite.",
 		}
 		m.status = fmt.Sprintf("Bridge validation failed: %s", err)
 		m.activeScreen = screenFiles
+		m.refreshViewport()
+		return m, nil
+	}
+
+	m.bridgeError = nil
+	m.assistantResult = ""
+	m.bridgePreview = fmt.Sprintf("$ %s %s", config.Python, strings.Join(args, " "))
+	m.bridgeRunning = true
+	m.status = "Sending transcript/XML to BiteBuilder's model assistant for a creative brief rewrite..."
+	m.activeScreen = screenPlan
+	m.refreshViewport()
+	return m, func() tea.Msg {
+		result, err := m.runner.RunBridgeOperation(m.ctx, config, "assistant")
+		return bridgeFinishedMsg{operation: "assistant", result: result, err: err}
+	}
+}
+
+func (m Model) handleBridgeFinished(msg bridgeFinishedMsg) Model {
+	m.bridgeRunning = false
+	m.bridgePreview = msg.result.Command
+	if msg.err != nil {
+		m.assistantResult = strings.TrimSpace(msg.result.Stderr + "\n" + msg.result.Stdout)
+		m.bridgeError = &bridgeErrorState{
+			Operation: msg.operation,
+			Code:      "bridge_run_failed",
+			Message:   msg.err.Error(),
+			Hint:      "Start gemma4server, confirm the selected files are readable, then retry.",
+		}
+		m.status = "Model assistant bridge failed."
+		return m
+	}
+
+	suggestion, err := extractAssistantSuggestion(msg.result.Stdout)
+	if err != nil {
+		m.assistantResult = strings.TrimSpace(msg.result.Stdout)
+		m.bridgeError = &bridgeErrorState{
+			Operation: msg.operation,
+			Code:      "invalid_bridge_json",
+			Message:   err.Error(),
+			Hint:      "The Python bridge should emit one JSON envelope on stdout.",
+		}
+		m.status = "Model assistant returned an unreadable bridge response."
 		return m
 	}
 
 	m.bridgeError = nil
-	m.bridgePreview = fmt.Sprintf("$ %s %s", config.Python, strings.Join(args, " "))
-	m.status = "Bridge request valid. Preview only; no subprocess was started."
+	m.assistantResult = suggestion
+	m.status = "Model assistant suggested a creative brief rewrite."
 	m.activeScreen = screenPlan
 	return m
 }
@@ -576,7 +653,7 @@ func (m Model) filesContent() string {
 		m.brief.View(),
 		m.outputDir.View(),
 		"",
-		"These fields are editable for request preview only. Press T/X to open Finder; press v to validate; no subprocess starts.",
+		"These fields are editable. Press T/X to open Finder; press v to ask the model assistant for a brief rewrite.",
 		fmt.Sprintf("Output basename preview: %s", outputPreview(m.outputDir.Value())),
 	}, "\n")
 }
@@ -599,15 +676,34 @@ func (m Model) filePickerContent() string {
 }
 
 func (m Model) planContent() string {
+	if m.bridgeRunning {
+		return strings.Join([]string{
+			"Model assistant",
+			"",
+			"Sending transcript/XML to the Python bridge and local model...",
+			"",
+			"Command:",
+			m.bridgePreview,
+		}, "\n")
+	}
+	if m.assistantResult != "" {
+		return strings.Join([]string{
+			"Model assistant suggestion",
+			"",
+			m.assistantResult,
+			"",
+			"Command:",
+			m.bridgePreview,
+		}, "\n")
+	}
 	if m.bridgePreview != "" {
 		return strings.Join([]string{
 			"Sequence-plan viewer",
 			"",
-			"Bridge request preview (read-only):",
+			"Bridge request preview:",
 			m.bridgePreview,
 			"",
-			"Bridge request valid. Preview only; no subprocess was started.",
-			"Generation remains gated for a later NDJSON subprocess-events phase.",
+			"Press v to run the live model assistant bridge once transcript/XML are selected.",
 		}, "\n")
 	}
 
@@ -679,12 +775,37 @@ func helpOverlay() string {
 		"  Tab / Shift+Tab  Move focus between file/setup fields",
 		"  T                Choose transcript .txt in Finder",
 		"  X                Choose Premiere XML .xml in Finder",
-		"  v                Validate the bridge request without running it",
+		"  v                Send transcript/XML to model assistant for a creative brief rewrite",
 		"  h or Esc         Toggle this help overlay",
 		"  q / Ctrl+C       Quit",
 		"",
 		"Bridge boundary: the UI reuses internal/bridge validation and displays structured errors; it does not duplicate subprocess logic.",
 	}, "\n")
+}
+
+func extractAssistantSuggestion(raw string) (string, error) {
+	type envelope struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			Suggestion string `json:"suggestion"`
+		} `json:"data"`
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	var parsed envelope
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return "", err
+	}
+	if !parsed.OK {
+		return "", fmt.Errorf("%s: %s", parsed.Error.Code, parsed.Error.Message)
+	}
+	suggestion := strings.TrimSpace(parsed.Data.Suggestion)
+	if suggestion == "" {
+		return "", fmt.Errorf("assistant bridge response did not include data.suggestion")
+	}
+	return suggestion, nil
 }
 
 func outputPreview(outputDir string) string {

@@ -142,7 +142,7 @@ func (c Config) BuildReadOnlyBridgeArgs(operation string) ([]string, error) {
 
 	switch operation {
 	case "setup":
-	case "media", "transcript":
+	case "media", "transcript", "assistant":
 		if strings.TrimSpace(c.TranscriptPath) == "" {
 			return nil, errors.New("transcript path is required")
 		}
@@ -181,7 +181,37 @@ func (c Config) BuildReadOnlyBridgeArgs(operation string) ([]string, error) {
 	if strings.TrimSpace(c.SequencePlan) != "" {
 		args = append(args, "--sequence-plan", c.SequencePlan)
 	}
+	if strings.TrimSpace(c.Brief) != "" {
+		args = append(args, "--brief", c.Brief)
+	}
 	return args, nil
+}
+
+// RunBridgeOperation invokes the Python JSON bridge and returns captured output.
+func (Runner) RunBridgeOperation(ctx context.Context, config Config, operation string) (RunResult, error) {
+	args, err := config.BuildReadOnlyBridgeArgs(operation)
+	if err != nil {
+		return RunResult{}, err
+	}
+
+	cmd := exec.CommandContext(ctx, config.Python, args...)
+	cmd.Dir = config.RepoRoot
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err = cmd.Run()
+	result := RunResult{
+		Command: strings.Join(append([]string{config.Python}, args...), " "),
+		Stdout:  stdout.String(),
+		Stderr:  stderr.String(),
+	}
+	if err != nil {
+		return result, fmt.Errorf("run BiteBuilder bridge operation %s: %w", operation, err)
+	}
+	return result, nil
 }
 
 // RunFirstPass invokes bitebuilder.py and returns captured output.

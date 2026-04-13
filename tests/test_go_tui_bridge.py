@@ -96,6 +96,35 @@ class GoTuiBridgeTests(unittest.TestCase):
             self.assertFalse(output_dir.exists(), "bridge operation must not render or mutate output")
             self.assertEqual(json.loads(plan_path.read_text(encoding="utf-8")), original_plan)
 
+
+    def test_assistant_operation_calls_model_with_line_by_line_prompt(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            transcript_path, xml_path, _ = self.write_inputs(tmp)
+            args = parse_args(
+                "--go-tui-bridge", "assistant",
+                "--transcript", str(transcript_path),
+                "--xml", str(xml_path),
+                "--brief", "make this more emotional",
+            )
+
+            with patch.object(bitebuilder, "resolve_host", return_value=("http://127.0.0.1:18084", ["gemma-4-E2B-it-Q8_0.gguf"])):
+                with patch.object(bitebuilder, "generate_text", return_value="Suggested Creative Brief:\nMake a sharper story.") as generate:
+                    status, stdout = run_bridge(args)
+
+            self.assertEqual(status, 0)
+            payload = json.loads(stdout)
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["operation"], "assistant")
+            self.assertIn("Suggested Creative Brief", payload["data"]["suggestion"])
+            self.assertGreaterEqual(payload["data"]["transcript"]["segment_count"], 1)
+            call = generate.call_args.kwargs
+            self.assertIn("## TRANSCRIPT LINE BY LINE", call["user_prompt"])
+            self.assertIn("[0] 00:00:00:00 - 00:00:02:00", call["user_prompt"])
+            self.assertIn("make this more emotional", call["user_prompt"])
+            self.assertEqual(call["model"], bitebuilder.DEFAULT_MODEL)
+            self.assertEqual(call["host"], "http://127.0.0.1:18084")
+
     def test_invalid_operation_returns_json_error_instead_of_argparse_text(self):
         args = parse_args("--go-tui-bridge", "explode")
 

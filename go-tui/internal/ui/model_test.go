@@ -14,12 +14,26 @@ import (
 )
 
 type fakeRunner struct {
-	calls int
+	calls        int
+	bridgeCalls  int
+	bridgeResult bridge.RunResult
+	bridgeErr    error
 }
 
 func (f *fakeRunner) RunFirstPass(context.Context, bridge.Config) (bridge.RunResult, error) {
 	f.calls++
 	return bridge.RunResult{Command: "python3 bitebuilder.py", Stdout: "ok"}, nil
+}
+
+func (f *fakeRunner) RunBridgeOperation(_ context.Context, _ bridge.Config, operation string) (bridge.RunResult, error) {
+	f.bridgeCalls++
+	if f.bridgeResult.Command == "" {
+		f.bridgeResult = bridge.RunResult{
+			Command: "python3 bitebuilder.py --go-tui-bridge " + operation,
+			Stdout:  `{"ok":true,"data":{"suggestion":"Suggested Creative Brief:\nMake it concise."}}`,
+		}
+	}
+	return f.bridgeResult, f.bridgeErr
 }
 
 func TestNewModelViewIncludesReadOnlyWelcome(t *testing.T) {
@@ -85,26 +99,51 @@ func TestValidateShowsStructuredBridgeErrorWithoutRunning(t *testing.T) {
 	}
 }
 
-func TestValidatePreviewDoesNotStartSubprocess(t *testing.T) {
+func TestValidateRunsAssistantBridgeAndDisplaysSuggestion(t *testing.T) {
 	runner := &fakeRunner{}
 	config := bridge.DefaultConfig("/repo")
 	config.TranscriptPath = "transcript.txt"
 	config.XMLPath = "source.xml"
 	config.Brief = "find one strong proof point"
-	model := New(context.Background(), runner, config)
+	model := tea.Model(New(context.Background(), runner, config))
 
 	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'v'}})
-	if cmd != nil {
-		t.Fatal("Update(v) returned command; preview must remain read-only")
+	if cmd == nil {
+		t.Fatal("Update(v) command = nil, want assistant bridge command")
 	}
-	view := updated.(Model).View()
-	for _, want := range []string{"Bridge request preview", "bitebuilder.py", "no subprocess was started"} {
+	model = updated
+	model, _ = model.Update(cmd())
+	view := model.View()
+	for _, want := range []string{"Model assistant suggestion", "Suggested Creative Brief:", "Make it concise."} {
 		if !strings.Contains(view, want) {
-			t.Fatalf("preview view missing %q: %q", want, view)
+			t.Fatalf("assistant view missing %q: %q", want, view)
 		}
 	}
-	if runner.calls != 0 {
-		t.Fatalf("preview invoked bridge runner %d times, want 0", runner.calls)
+	if runner.bridgeCalls != 1 {
+		t.Fatalf("bridge calls = %d, want 1", runner.bridgeCalls)
+	}
+}
+
+func TestBriefTextareaAcceptsGlobalHotkeyCharacters(t *testing.T) {
+	runner := &fakeRunner{}
+	model := New(context.Background(), runner, bridge.DefaultConfig("/repo"))
+	model.activeScreen = screenFiles
+	model.focus = 2
+	model.blurFocused()
+	model.focusFocused()
+
+	for _, r := range []rune("qhvTX") {
+		updated, cmd := tea.Model(model).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		model = updated.(Model)
+		if cmd != nil {
+			// Textarea may return cursor blink commands; executing them is not needed here.
+		}
+	}
+	if got := model.brief.Value(); got != "qhvTX" {
+		t.Fatalf("brief value = %q, want hotkey characters typed into textarea", got)
+	}
+	if runner.bridgeCalls != 0 {
+		t.Fatalf("typing invoked bridge %d times, want 0", runner.bridgeCalls)
 	}
 }
 
