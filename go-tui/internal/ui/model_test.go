@@ -2,6 +2,8 @@ package ui
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -102,5 +104,61 @@ func TestValidatePreviewDoesNotStartSubprocess(t *testing.T) {
 	}
 	if runner.calls != 0 {
 		t.Fatalf("preview invoked bridge runner %d times, want 0", runner.calls)
+	}
+}
+
+func TestBrowseTranscriptStartsFilePicker(t *testing.T) {
+	runner := &fakeRunner{}
+	config := bridge.DefaultConfig(t.TempDir())
+	model := tea.Model(New(context.Background(), runner, config))
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'T'}})
+	if cmd == nil {
+		t.Fatal("Update(T) command = nil, want file picker init command")
+	}
+
+	browsing := updated.(Model)
+	if browsing.picking != pickTranscript {
+		t.Fatalf("picking = %v, want pickTranscript", browsing.picking)
+	}
+	for _, want := range []string{"Browse transcript (.txt)", "Browsing for a transcript .txt file", "q cancels"} {
+		if !strings.Contains(browsing.View(), want) {
+			t.Fatalf("browse view missing %q: %q", want, browsing.View())
+		}
+	}
+	if runner.calls != 0 {
+		t.Fatalf("browse invoked bridge runner %d times, want 0", runner.calls)
+	}
+}
+
+func TestApplyPickedFilesPopulatePathFields(t *testing.T) {
+	runner := &fakeRunner{}
+	root := t.TempDir()
+	transcriptPath := filepath.Join(root, "interview.txt")
+	xmlPath := filepath.Join(root, "source.xml")
+	if err := os.WriteFile(transcriptPath, []byte("transcript"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(xmlPath, []byte("<xml/>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	model := New(context.Background(), runner, bridge.DefaultConfig(root))
+
+	model = model.startPicking(pickTranscript, []string{".txt"}, "")
+	model = model.applyPickedFile(transcriptPath)
+	if got := model.transcript.Value(); got != transcriptPath {
+		t.Fatalf("transcript path = %q, want %q", got, transcriptPath)
+	}
+
+	model = model.startPicking(pickXML, []string{".xml"}, "")
+	model = model.applyPickedFile(xmlPath)
+	if got := model.xml.Value(); got != xmlPath {
+		t.Fatalf("XML path = %q, want %q", got, xmlPath)
+	}
+	if model.picking != pickNone {
+		t.Fatalf("picking = %v, want pickNone after selection", model.picking)
+	}
+	if runner.calls != 0 {
+		t.Fatalf("file picking invoked bridge runner %d times, want 0", runner.calls)
 	}
 }

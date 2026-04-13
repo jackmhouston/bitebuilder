@@ -3,9 +3,11 @@ package ui
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/filepicker"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -32,6 +34,14 @@ const (
 	screenTranscript
 )
 
+type pickTarget int
+
+const (
+	pickNone pickTarget = iota
+	pickTranscript
+	pickXML
+)
+
 type bridgeErrorState struct {
 	Operation string
 	Code      string
@@ -50,8 +60,10 @@ type Model struct {
 	brief      textarea.Model
 	outputDir  textinput.Model
 	viewport   viewport.Model
+	picker     filepicker.Model
 
 	activeScreen  screen
+	picking       pickTarget
 	focus         int
 	width         int
 	height        int
@@ -86,6 +98,8 @@ func New(ctx context.Context, runner firstPassRunner, config bridge.Config) Mode
 	outputDir.Prompt = "Output:     "
 	outputDir.SetValue(config.OutputDir)
 
+	picker := newFilePicker(config.RepoRoot, []string{".txt"})
+
 	vp := viewport.New(78, 10)
 	model := Model{
 		ctx:          ctx,
@@ -96,8 +110,9 @@ func New(ctx context.Context, runner firstPassRunner, config bridge.Config) Mode
 		brief:        brief,
 		outputDir:    outputDir,
 		viewport:     vp,
+		picker:       picker,
 		activeScreen: screenWelcome,
-		status:       "Read-only prototype. Tab changes setup focus; 1-5 switches screens; v validates bridge request; h opens help.",
+		status:       "Read-only prototype. Tab changes focus; T browses .txt; X browses .xml; v validates; h opens help.",
 	}
 	model.refreshViewport()
 	return model
@@ -114,8 +129,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.viewport.Width = max(24, msg.Width-4)
 		m.viewport.Height = max(6, msg.Height-13)
+		m.picker.SetHeight(max(6, msg.Height-14))
 		m.refreshViewport()
 	case tea.KeyMsg:
+		if m.picking != pickNone {
+			switch {
+			case key.Matches(msg, keys.quit):
+				m.picking = pickNone
+				m.status = "File picker closed."
+				m.refreshViewport()
+				return m, nil
+			}
+
+			var cmd tea.Cmd
+			m.picker, cmd = m.picker.Update(msg)
+			if didSelect, path := m.picker.DidSelectFile(msg); didSelect {
+				m = m.applyPickedFile(path)
+				m.refreshViewport()
+				return m, nil
+			}
+			if didSelect, path := m.picker.DidSelectDisabledFile(msg); didSelect {
+				m.status = fmt.Sprintf("Cannot select %s for this field.", filepath.Base(path))
+				m.refreshViewport()
+				return m, cmd
+			}
+			m.refreshViewport()
+			return m, cmd
+		}
+
 		if m.helpOpen {
 			switch {
 			case key.Matches(msg, keys.help), key.Matches(msg, keys.escape), key.Matches(msg, keys.quit):
@@ -154,6 +195,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m = m.validateBridgeRequest()
 			m.refreshViewport()
 			return m, nil
+		case key.Matches(msg, keys.browseTranscript):
+			m = m.startPicking(pickTranscript, []string{".txt"}, m.transcript.Value())
+			m.refreshViewport()
+			return m, m.picker.Init()
+		case key.Matches(msg, keys.browseXML):
+			m = m.startPicking(pickXML, []string{".xml"}, m.xml.Value())
+			m.refreshViewport()
+			return m, m.picker.Init()
 		case key.Matches(msg, keys.welcome):
 			m.activeScreen = screenWelcome
 			m.status = "Welcome/setup screen selected."
@@ -210,7 +259,7 @@ func (m Model) View() string {
 		lipgloss.Left,
 		titleStyle.Render("BiteBuilder Go TUI"),
 		subtitleStyle.Render("Read-only prototype for planning, reviewing, and validating the Python bridge request."),
-		navStyle.Render("1 Welcome • 2 Files • 3 Sequence Plan • 4 Bite Detail • 5 Transcript • v Validate • h Help • q Quit"),
+		navStyle.Render("1 Welcome • 2 Files • 3 Plan • 4 Bite • 5 Transcript • T Browse TXT • X Browse XML • v Validate • h Help • q Quit"),
 	)
 
 	body := boxStyle.Render(m.viewport.View())
@@ -267,6 +316,64 @@ func (m *Model) focusFocused() {
 	}
 }
 
+func (m Model) startPicking(target pickTarget, allowedTypes []string, currentPath string) Model {
+	startDir := m.config.RepoRoot
+	if strings.TrimSpace(currentPath) != "" {
+		startDir = filepath.Dir(currentPath)
+	}
+	if strings.TrimSpace(startDir) == "" {
+		startDir = "."
+	}
+	if stat, err := os.Stat(startDir); err != nil || !stat.IsDir() {
+		startDir = m.config.RepoRoot
+	}
+	if strings.TrimSpace(startDir) == "" {
+		startDir = "."
+	}
+
+	m.picker = newFilePicker(startDir, allowedTypes)
+	m.picking = target
+	m.activeScreen = screenFiles
+	switch target {
+	case pickTranscript:
+		m.status = "Browsing for a transcript .txt file. Enter selects; q cancels."
+	case pickXML:
+		m.status = "Browsing for a Premiere XML .xml file. Enter selects; q cancels."
+	}
+	return m
+}
+
+func newFilePicker(startDir string, allowedTypes []string) filepicker.Model {
+	picker := filepicker.New()
+	picker.CurrentDirectory = defaultIfBlank(startDir, ".")
+	picker.AllowedTypes = allowedTypes
+	picker.ShowHidden = false
+	picker.ShowPermissions = false
+	picker.ShowSize = true
+	picker.AutoHeight = false
+	picker.SetHeight(12)
+	return picker
+}
+
+func (m Model) applyPickedFile(path string) Model {
+	path = filepath.Clean(path)
+	switch m.picking {
+	case pickTranscript:
+		m.transcript.SetValue(path)
+		m.focus = 0
+		m.status = fmt.Sprintf("Selected transcript: %s", path)
+	case pickXML:
+		m.xml.SetValue(path)
+		m.focus = 1
+		m.status = fmt.Sprintf("Selected XML: %s", path)
+	}
+	m.blurFocused()
+	m.focusFocused()
+	m.picking = pickNone
+	m.bridgeError = nil
+	return m
+}
+
 func (m Model) validateBridgeRequest() Model {
 	config := m.currentConfig()
 	args, err := config.BuildFirstPassArgs()
@@ -307,6 +414,10 @@ func (m *Model) refreshViewport() {
 }
 
 func (m Model) screenContent() string {
+	if m.picking != pickNone {
+		return m.filePickerContent()
+	}
+
 	if m.bridgeError != nil {
 		return strings.Join([]string{
 			"Structured bridge error state",
@@ -358,13 +469,32 @@ func (m Model) filesContent() string {
 		"Path / file selection",
 		"",
 		m.transcript.View(),
+		"  [T] Browse transcript .txt",
 		m.xml.View(),
+		"  [X] Browse Premiere XML .xml",
 		"Creative brief:",
 		m.brief.View(),
 		m.outputDir.View(),
 		"",
-		"These fields are editable for request preview only. Press v to validate; no subprocess starts.",
+		"These fields are editable for request preview only. Press T/X to browse; press v to validate; no subprocess starts.",
 		fmt.Sprintf("Output basename preview: %s", outputPreview(m.outputDir.Value())),
+	}, "\n")
+}
+
+func (m Model) filePickerContent() string {
+	title := "Browse for file"
+	switch m.picking {
+	case pickTranscript:
+		title = "Browse transcript (.txt)"
+	case pickXML:
+		title = "Browse Premiere XML (.xml)"
+	}
+	return strings.Join([]string{
+		title,
+		"",
+		m.picker.View(),
+		"",
+		"Enter/right opens directories or selects an allowed file. q cancels.",
 	}, "\n")
 }
 
@@ -447,6 +577,8 @@ func helpOverlay() string {
 		"",
 		"Actions:",
 		"  Tab / Shift+Tab  Move focus between file/setup fields",
+		"  T                Browse for transcript .txt",
+		"  X                Browse for Premiere XML .xml",
 		"  v                Validate the bridge request without running it",
 		"  h or Esc         Toggle this help overlay",
 		"  q / Ctrl+C       Quit",
@@ -470,29 +602,33 @@ func defaultIfBlank(value, fallback string) string {
 }
 
 var keys = struct {
-	quit       key.Binding
-	next       key.Binding
-	prev       key.Binding
-	help       key.Binding
-	escape     key.Binding
-	validate   key.Binding
-	welcome    key.Binding
-	files      key.Binding
-	plan       key.Binding
-	bite       key.Binding
-	transcript key.Binding
+	quit             key.Binding
+	next             key.Binding
+	prev             key.Binding
+	help             key.Binding
+	escape           key.Binding
+	validate         key.Binding
+	browseTranscript key.Binding
+	browseXML        key.Binding
+	welcome          key.Binding
+	files            key.Binding
+	plan             key.Binding
+	bite             key.Binding
+	transcript       key.Binding
 }{
-	quit:       key.NewBinding(key.WithKeys("q", "ctrl+c")),
-	next:       key.NewBinding(key.WithKeys("tab")),
-	prev:       key.NewBinding(key.WithKeys("shift+tab")),
-	help:       key.NewBinding(key.WithKeys("h", "?")),
-	escape:     key.NewBinding(key.WithKeys("esc")),
-	validate:   key.NewBinding(key.WithKeys("v", "ctrl+r")),
-	welcome:    key.NewBinding(key.WithKeys("1")),
-	files:      key.NewBinding(key.WithKeys("2")),
-	plan:       key.NewBinding(key.WithKeys("3")),
-	bite:       key.NewBinding(key.WithKeys("4")),
-	transcript: key.NewBinding(key.WithKeys("5")),
+	quit:             key.NewBinding(key.WithKeys("q", "ctrl+c")),
+	next:             key.NewBinding(key.WithKeys("tab")),
+	prev:             key.NewBinding(key.WithKeys("shift+tab")),
+	help:             key.NewBinding(key.WithKeys("h", "?")),
+	escape:           key.NewBinding(key.WithKeys("esc")),
+	validate:         key.NewBinding(key.WithKeys("v", "ctrl+r")),
+	browseTranscript: key.NewBinding(key.WithKeys("T")),
+	browseXML:        key.NewBinding(key.WithKeys("X")),
+	welcome:          key.NewBinding(key.WithKeys("1")),
+	files:            key.NewBinding(key.WithKeys("2")),
+	plan:             key.NewBinding(key.WithKeys("3")),
+	bite:             key.NewBinding(key.WithKeys("4")),
+	transcript:       key.NewBinding(key.WithKeys("5")),
 }
 
 var (
