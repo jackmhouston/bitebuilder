@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/filepicker"
@@ -47,6 +49,16 @@ type bridgeErrorState struct {
 	Code      string
 	Message   string
 	Hint      string
+}
+
+type nativeFilePickedMsg struct {
+	target pickTarget
+	path   string
+}
+
+type nativeFilePickErrorMsg struct {
+	target pickTarget
+	err    error
 }
 
 // Model is a read-only Bubble Tea prototype for BiteBuilder's Go TUI lane.
@@ -131,6 +143,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport.Height = max(6, msg.Height-13)
 		m.picker.SetHeight(max(6, msg.Height-14))
 		m.refreshViewport()
+	case nativeFilePickedMsg:
+		m.picking = msg.target
+		m = m.applyPickedFile(msg.path)
+		m.activeScreen = screenFiles
+		m.refreshViewport()
+		return m, nil
+	case nativeFilePickErrorMsg:
+		m.picking = pickNone
+		if isUserCancelledFilePick(msg.err) {
+			m.status = "Finder file selection cancelled."
+		} else {
+			m.status = fmt.Sprintf("Finder file selection failed: %s", msg.err)
+		}
+		m.refreshViewport()
+		return m, nil
 	case tea.KeyMsg:
 		if m.picking != pickNone {
 			switch {
@@ -196,13 +223,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshViewport()
 			return m, nil
 		case key.Matches(msg, keys.browseTranscript):
-			m = m.startPicking(pickTranscript, []string{".txt"}, m.transcript.Value())
-			m.refreshViewport()
-			return m, m.picker.Init()
+			return m.startFileSelection(pickTranscript, []string{".txt"}, m.transcript.Value())
 		case key.Matches(msg, keys.browseXML):
-			m = m.startPicking(pickXML, []string{".xml"}, m.xml.Value())
-			m.refreshViewport()
-			return m, m.picker.Init()
+			return m.startFileSelection(pickXML, []string{".xml"}, m.xml.Value())
 		case key.Matches(msg, keys.welcome):
 			m.activeScreen = screenWelcome
 			m.status = "Welcome/setup screen selected."
@@ -316,20 +339,28 @@ func (m *Model) focusFocused() {
 	}
 }
 
+func (m Model) startFileSelection(target pickTarget, allowedTypes []string, currentPath string) (Model, tea.Cmd) {
+	startDir := m.fileSelectionStartDir(currentPath)
+	m.activeScreen = screenFiles
+	if runtime.GOOS == "darwin" {
+		m.picking = pickNone
+		switch target {
+		case pickTranscript:
+			m.status = "Opening Finder to choose a transcript .txt file..."
+		case pickXML:
+			m.status = "Opening Finder to choose a Premiere XML .xml file..."
+		}
+		m.refreshViewport()
+		return m, chooseFileWithFinderCmd(target, startDir, allowedTypes)
+	}
+
+	m = m.startPicking(target, allowedTypes, currentPath)
+	m.refreshViewport()
+	return m, m.picker.Init()
+}
+
 func (m Model) startPicking(target pickTarget, allowedTypes []string, currentPath string) Model {
-	startDir := m.config.RepoRoot
-	if strings.TrimSpace(currentPath) != "" {
-		startDir = filepath.Dir(currentPath)
-	}
-	if strings.TrimSpace(startDir) == "" {
-		startDir = "."
-	}
-	if stat, err := os.Stat(startDir); err != nil || !stat.IsDir() {
-		startDir = m.config.RepoRoot
-	}
-	if strings.TrimSpace(startDir) == "" {
-		startDir = "."
-	}
+	startDir := m.fileSelectionStartDir(currentPath)
 
 	m.picker = newFilePicker(startDir, allowedTypes)
 	m.picking = target
@@ -343,6 +374,23 @@ func (m Model) startPicking(target pickTarget, allowedTypes []string, currentPat
 	return m
 }
 
+func (m Model) fileSelectionStartDir(currentPath string) string {
+	startDir := m.config.RepoRoot
+	if strings.TrimSpace(currentPath) != "" {
+		startDir = filepath.Dir(currentPath)
+	}
+	if strings.TrimSpace(startDir) == "" {
+		startDir = "."
+	}
+	if stat, err := os.Stat(startDir); err != nil || !stat.IsDir() {
+		startDir = m.config.RepoRoot
+	}
+	if strings.TrimSpace(startDir) == "" {
+		startDir = "."
+	}
+	return startDir
+}
+
 func newFilePicker(startDir string, allowedTypes []string) filepicker.Model {
 	picker := filepicker.New()
 	picker.CurrentDirectory = defaultIfBlank(startDir, ".")
@@ -353,6 +401,58 @@ func newFilePicker(startDir string, allowedTypes []string) filepicker.Model {
 	picker.AutoHeight = false
 	picker.SetHeight(12)
 	return picker
+}
+
+func chooseFileWithFinderCmd(target pickTarget, startDir string, allowedTypes []string) tea.Cmd {
+	return func() tea.Msg {
+		if runtime.GOOS != "darwin" {
+			return nativeFilePickErrorMsg{target: target, err: fmt.Errorf("Finder file dialog is only available on macOS")}
+		}
+
+		extension := ""
+		if len(allowedTypes) > 0 {
+			extension = strings.TrimPrefix(allowedTypes[0], ".")
+		}
+		if extension == "" {
+			extension = "*"
+		}
+
+		prompt := "Choose a BiteBuilder file"
+		switch target {
+		case pickTranscript:
+			prompt = "Choose a BiteBuilder transcript .txt file"
+		case pickXML:
+			prompt = "Choose a BiteBuilder Premiere XML .xml file"
+		}
+
+		script := fmt.Sprintf(
+			"set defaultFolder to POSIX file %q\nset chosenFile to choose file with prompt %q of type {%q} default location defaultFolder\nPOSIX path of chosenFile",
+			startDir,
+			prompt,
+			extension,
+		)
+		output, err := exec.Command("osascript", "-e", script).CombinedOutput()
+		if err != nil {
+			return nativeFilePickErrorMsg{
+				target: target,
+				err:    fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output))),
+			}
+		}
+
+		path := strings.TrimSpace(string(output))
+		if path == "" {
+			return nativeFilePickErrorMsg{target: target, err: fmt.Errorf("Finder returned no file")}
+		}
+		return nativeFilePickedMsg{target: target, path: path}
+	}
+}
+
+func isUserCancelledFilePick(err error) bool {
+	if err == nil {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "user canceled") || strings.Contains(lower, "user cancelled")
 }
 
 func (m Model) applyPickedFile(path string) Model {
@@ -469,14 +569,14 @@ func (m Model) filesContent() string {
 		"Path / file selection",
 		"",
 		m.transcript.View(),
-		"  [T] Browse transcript .txt",
+		"  [T] Choose transcript .txt in Finder",
 		m.xml.View(),
-		"  [X] Browse Premiere XML .xml",
+		"  [X] Choose Premiere XML .xml in Finder",
 		"Creative brief:",
 		m.brief.View(),
 		m.outputDir.View(),
 		"",
-		"These fields are editable for request preview only. Press T/X to browse; press v to validate; no subprocess starts.",
+		"These fields are editable for request preview only. Press T/X to open Finder; press v to validate; no subprocess starts.",
 		fmt.Sprintf("Output basename preview: %s", outputPreview(m.outputDir.Value())),
 	}, "\n")
 }
@@ -577,8 +677,8 @@ func helpOverlay() string {
 		"",
 		"Actions:",
 		"  Tab / Shift+Tab  Move focus between file/setup fields",
-		"  T                Browse for transcript .txt",
-		"  X                Browse for Premiere XML .xml",
+		"  T                Choose transcript .txt in Finder",
+		"  X                Choose Premiere XML .xml in Finder",
 		"  v                Validate the bridge request without running it",
 		"  h or Esc         Toggle this help overlay",
 		"  q / Ctrl+C       Quit",

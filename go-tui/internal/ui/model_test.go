@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -118,16 +119,41 @@ func TestBrowseTranscriptStartsFilePicker(t *testing.T) {
 	}
 
 	browsing := updated.(Model)
-	if browsing.picking != pickTranscript {
-		t.Fatalf("picking = %v, want pickTranscript", browsing.picking)
-	}
-	for _, want := range []string{"Browse transcript (.txt)", "Browsing for a transcript .txt file", "q cancels"} {
-		if !strings.Contains(browsing.View(), want) {
-			t.Fatalf("browse view missing %q: %q", want, browsing.View())
+	if runtime.GOOS == "darwin" {
+		if browsing.picking != pickNone {
+			t.Fatalf("picking = %v, want pickNone while Finder command is running", browsing.picking)
+		}
+		if !strings.Contains(browsing.View(), "Opening Finder to choose a transcript .txt file") {
+			t.Fatalf("Finder browse view missing status: %q", browsing.View())
+		}
+	} else {
+		if browsing.picking != pickTranscript {
+			t.Fatalf("picking = %v, want pickTranscript", browsing.picking)
+		}
+		for _, want := range []string{"Browse transcript (.txt)", "Browsing for a transcript .txt file", "q cancels"} {
+			if !strings.Contains(browsing.View(), want) {
+				t.Fatalf("browse view missing %q: %q", want, browsing.View())
+			}
 		}
 	}
 	if runner.calls != 0 {
 		t.Fatalf("browse invoked bridge runner %d times, want 0", runner.calls)
+	}
+}
+
+func TestNativeFilePickedMessagePopulatesPath(t *testing.T) {
+	runner := &fakeRunner{}
+	root := t.TempDir()
+	transcriptPath := filepath.Join(root, "interview.txt")
+	model := tea.Model(New(context.Background(), runner, bridge.DefaultConfig(root)))
+
+	updated, cmd := model.Update(nativeFilePickedMsg{target: pickTranscript, path: transcriptPath})
+	if cmd != nil {
+		t.Fatal("nativeFilePickedMsg returned command")
+	}
+	got := updated.(Model).transcript.Value()
+	if got != transcriptPath {
+		t.Fatalf("transcript path = %q, want %q", got, transcriptPath)
 	}
 }
 
