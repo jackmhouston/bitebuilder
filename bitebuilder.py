@@ -3467,7 +3467,7 @@ Examples:
     )
     parser.add_argument(
         '--model', default=DEFAULT_MODEL,
-        help=f'Ollama model name (default: {DEFAULT_MODEL})'
+        help=f'Ollama or llama-server model name (default: {DEFAULT_MODEL})'
     )
     parser.add_argument(
         '--output', default='./output',
@@ -3475,7 +3475,7 @@ Examples:
     )
     parser.add_argument(
         '--host', default=DEFAULT_HOST,
-        help=f'Ollama API host URL (default: {DEFAULT_HOST})'
+        help=f'Ollama or llama-server API host URL (default: {DEFAULT_HOST})'
     )
     parser.add_argument(
         '--timeout', type=int, default=DEFAULT_TIMEOUT,

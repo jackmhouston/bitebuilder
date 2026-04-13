@@ -1,7 +1,8 @@
 """
-Ollama local LLM client.
+Local LLM client.
 
-Communicates with Ollama's HTTP API at localhost:11434.
+Communicates with Ollama's HTTP API by default, and can also fall back to
+OpenAI-compatible llama-server endpoints when pointed at a llama.cpp server.
 Supports JSON mode for structured output.
 """
 
@@ -96,11 +97,56 @@ def _request_generate_result(payload: dict, host: str, timeout: int) -> dict:
             f"Try a smaller model or increase --timeout."
         )
     except requests.HTTPError as e:
+        if response is not None and response.status_code == 404 and _is_openai_compatible_host(host):
+            return _request_openai_chat_result(payload, host, timeout)
         if response is not None and ("model" in str(e).lower() or response.status_code == 404):
             raise ValueError(
                 f"Model '{payload['model']}' not found. Pull it with: ollama pull {payload['model']}"
             )
         raise
+
+    return response.json()
+
+
+def _is_openai_compatible_host(host: str) -> bool:
+    """Return True when a host looks like a llama.cpp/OpenAI-compatible server."""
+    host = normalize_host(host)
+    try:
+        response = requests.get(f"{host}/v1/models", timeout=5)
+        return response.status_code == 200
+    except Exception:
+        return False
+
+
+def _request_openai_chat_result(payload: dict, host: str, timeout: int) -> dict:
+    """Send an OpenAI-compatible chat completion request, used by llama-server."""
+    host = normalize_host(host)
+    options = payload.get("options") or {}
+    messages = []
+    if payload.get("system"):
+        messages.append({"role": "system", "content": payload["system"]})
+    messages.append({"role": "user", "content": payload.get("prompt", "")})
+    chat_payload = {
+        "model": payload["model"],
+        "messages": messages,
+        "temperature": options.get("temperature", DEFAULT_TEXT_TEMPERATURE),
+        "max_tokens": options.get("num_predict", DEFAULT_TEXT_PREDICT_TOKENS),
+        "stream": False,
+    }
+    if payload.get("format") == "json":
+        chat_payload["response_format"] = {"type": "json_object"}
+
+    try:
+        print(f"  Sending to llama-server ({payload['model']})...", file=sys.stderr)
+        response = requests.post(f"{host}/v1/chat/completions", json=chat_payload, timeout=timeout)
+        response.raise_for_status()
+    except requests.ConnectionError:
+        raise ConnectionError(
+            f"Cannot connect to llama-server/OpenAI-compatible host at {host}. "
+            "Start it with: llama-server --host 127.0.0.1 --port 18084 --model /path/to/model.gguf"
+        )
+    except requests.Timeout:
+        raise TimeoutError(f"llama-server request timed out after {timeout}s.")
 
     return response.json()
 
@@ -119,6 +165,19 @@ def _extract_response_text(result: dict | None) -> str:
         content = message.get("content")
         if isinstance(content, str) and content:
             return content
+
+    choices = result.get("choices")
+    if isinstance(choices, list) and choices:
+        first = choices[0]
+        if isinstance(first, dict):
+            message = first.get("message")
+            if isinstance(message, dict):
+                content = message.get("content")
+                if isinstance(content, str) and content:
+                    return content
+            text = first.get("text")
+            if isinstance(text, str) and text:
+                return text
 
     return ""
 
@@ -327,22 +386,40 @@ def _repair_json_text(raw_text: str, model: str, host: str, timeout: int) -> str
 
 
 def check_connection(host: str = DEFAULT_HOST) -> bool:
-    """Check if Ollama is running and reachable."""
+    """Check if an Ollama or OpenAI-compatible llama-server host is reachable."""
     try:
         host = normalize_host(host)
         r = requests.get(f"{host}/api/tags", timeout=5)
+        if r.status_code == 200:
+            return True
+        r = requests.get(f"{host}/v1/models", timeout=5)
+        if r.status_code == 200:
+            return True
+        r = requests.get(f"{host}/health", timeout=5)
         return r.status_code == 200
     except Exception:
         return False
 
 
 def list_models(host: str = DEFAULT_HOST) -> list[str]:
-    """List available models on the local Ollama instance."""
+    """List available models on the local Ollama or llama-server instance."""
     try:
         host = normalize_host(host)
         r = requests.get(f"{host}/api/tags", timeout=5)
+        if r.status_code == 200:
+            return [m["name"] for m in r.json().get("models", [])]
+        r = requests.get(f"{host}/v1/models", timeout=5)
         r.raise_for_status()
-        return [m["name"] for m in r.json().get("models", [])]
+        payload = r.json()
+        if isinstance(payload.get("data"), list):
+            return [m["id"] for m in payload["data"] if isinstance(m, dict) and m.get("id")]
+        if isinstance(payload.get("models"), list):
+            return [
+                m.get("name") or m.get("model")
+                for m in payload["models"]
+                if isinstance(m, dict) and (m.get("name") or m.get("model"))
+            ]
+        return []
     except Exception:
         return []
 
@@ -352,7 +429,7 @@ def resolve_host(
     preferred_host: str | None = None,
 ) -> tuple[str, list[str]]:
     """
-    Resolve the best reachable Ollama host, preferring one that has the requested model.
+    Resolve the best reachable Ollama or llama-server host, preferring one that has the requested model.
     """
     connected_hosts = []
     target_name = model.split(":")[0] if model else None
