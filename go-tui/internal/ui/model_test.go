@@ -40,7 +40,7 @@ func TestNewModelViewIncludesReadOnlyWelcome(t *testing.T) {
 	runner := &fakeRunner{}
 	model := New(context.Background(), runner, bridge.DefaultConfig("/repo"))
 	view := model.View()
-	for _, want := range []string{"BiteBuilder Go TUI", "Welcome / setup", "Read-only prototype"} {
+	for _, want := range []string{"BiteBuilder Go TUI", "Welcome / setup", "interactive BiteBuilder workspace"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("View() missing %q: %q", want, view)
 		}
@@ -68,7 +68,7 @@ func TestScreenNavigationShowsPrototypeScreens(t *testing.T) {
 	for _, tc := range cases {
 		updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{tc.key}})
 		if cmd != nil {
-			t.Fatalf("Update(%q) returned command; navigation should be read-only", string(tc.key))
+			t.Fatalf("Update(%q) returned command; navigation should not start commands", string(tc.key))
 		}
 		model = updated
 		view := model.View()
@@ -86,7 +86,7 @@ func TestValidateShowsStructuredBridgeErrorWithoutRunning(t *testing.T) {
 	model := New(context.Background(), runner, bridge.DefaultConfig("/repo"))
 	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'v'}})
 	if cmd != nil {
-		t.Fatal("Update(v) returned command despite read-only validation")
+		t.Fatal("Update(v) returned command despite missing required assistant inputs")
 	}
 	view := updated.(Model).View()
 	for _, want := range []string{"Structured bridge error state", "code:      invalid_request", "transcript path is required"} {
@@ -121,6 +121,33 @@ func TestValidateRunsAssistantBridgeAndDisplaysSuggestion(t *testing.T) {
 	}
 	if runner.bridgeCalls != 1 {
 		t.Fatalf("bridge calls = %d, want 1", runner.bridgeCalls)
+	}
+}
+
+func TestAcceptAssistantSuggestionUpdatesBriefField(t *testing.T) {
+	runner := &fakeRunner{}
+	model := tea.Model(New(context.Background(), runner, bridge.DefaultConfig("/repo")))
+	model, _ = model.Update(bridgeFinishedMsg{
+		operation: "assistant",
+		result: bridge.RunResult{
+			Command: "python3 bitebuilder.py --go-tui-bridge assistant",
+			Stdout:  `{"ok":true,"data":{"suggestion":"Suggested Creative Brief:\nMake a concise narrative.\n\nWhy This Direction Works:\nIt fits."}}`,
+		},
+	})
+
+	model, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	accepted := model.(Model)
+	if got := accepted.brief.Value(); got != "Make a concise narrative." {
+		t.Fatalf("brief = %q, want accepted suggested brief", got)
+	}
+	if accepted.activeScreen != screenFiles {
+		t.Fatalf("activeScreen = %v, want screenFiles", accepted.activeScreen)
+	}
+}
+
+func TestExtractSuggestedBriefFallsBackToWholeSuggestion(t *testing.T) {
+	if got := extractSuggestedBrief("Use the strongest proof point."); got != "Use the strongest proof point." {
+		t.Fatalf("fallback extracted %q", got)
 	}
 }
 

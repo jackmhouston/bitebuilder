@@ -1,6 +1,6 @@
 # Go TUI bridge
 
-This bridge gives the Go TUI prototype a stable, non-server way to inspect
+This bridge gives the Go TUI a stable, non-server way to inspect
 BiteBuilder state and ask the existing Python backend for model-assistant help
 without importing Python internals or mutating output files. It is intentionally
 request/response JSON over a Python subprocess for setup/media/plan/transcript/
@@ -108,5 +108,5 @@ transcript/bite only read supplied files, parse/validate them in memory, and
 print JSON. The `assistant` operation additionally calls the configured Python
 model client (`generate_text`) to produce a creative-brief rewrite, but still
 does not render XML, edit a sequence plan, or write output files. This keeps the
-Go TUI prototype safe while allowing live model-assistant testing before the
+Go TUI safe while allowing live model-assistant testing before the
 future NDJSON generation transport is implemented.

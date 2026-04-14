@@ -3071,7 +3071,7 @@ def _bridge_assistant_prompt(*, segments, source, brief: str, project_context: s
 
 
 def build_go_tui_bridge_response(args) -> dict:
-    """Build a read-only JSON response for the Go TUI prototype bridge."""
+    """Build a JSON response for the Go TUI bridge."""
     operation = (args.go_tui_bridge or "").strip().lower()
     if operation not in {"setup", "media", "plan", "transcript", "bite", "assistant"}:
         raise _bridge_validation_error(

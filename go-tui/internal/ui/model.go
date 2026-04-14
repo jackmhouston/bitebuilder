@@ -69,7 +69,7 @@ type bridgeFinishedMsg struct {
 	err       error
 }
 
-// Model is a read-only Bubble Tea prototype for BiteBuilder's Go TUI lane.
+// Model is the Bubble Tea state for BiteBuilder's Go TUI.
 type Model struct {
 	ctx    context.Context
 	runner firstPassRunner
@@ -95,7 +95,7 @@ type Model struct {
 	bridgeRunning   bool
 }
 
-// New constructs the read-only Go TUI model with defaults from bridge.Config.
+// New constructs the Go TUI model with defaults from bridge.Config.
 func New(ctx context.Context, runner firstPassRunner, config bridge.Config) Model {
 	transcript := textinput.New()
 	transcript.Placeholder = "/path/to/timecoded-transcript.txt"
@@ -134,7 +134,7 @@ func New(ctx context.Context, runner firstPassRunner, config bridge.Config) Mode
 		viewport:     vp,
 		picker:       picker,
 		activeScreen: screenWelcome,
-		status:       "Model-assistant prototype. Tab changes focus; T opens .txt; X opens .xml; v asks model; h opens help.",
+		status:       "Tab changes focus; T opens .txt; X opens .xml; v asks model assistant; h opens help.",
 	}
 	model.refreshViewport()
 	return model
@@ -256,6 +256,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case key.Matches(msg, keys.validate):
 			return m.runAssistantBridge()
+		case key.Matches(msg, keys.acceptSuggestion):
+			m = m.acceptAssistantSuggestion()
+			m.refreshViewport()
+			return m, nil
 		case key.Matches(msg, keys.browseTranscript):
 			return m.startFileSelection(pickTranscript, []string{".txt"}, m.transcript.Value())
 		case key.Matches(msg, keys.browseXML):
@@ -315,8 +319,8 @@ func (m Model) View() string {
 	top := lipgloss.JoinVertical(
 		lipgloss.Left,
 		titleStyle.Render("BiteBuilder Go TUI"),
-		subtitleStyle.Render("Read-only prototype for planning, reviewing, and validating the Python bridge request."),
-		navStyle.Render("1 Welcome • 2 Files • 3 Plan • 4 Bite • 5 Transcript • T TXT • X XML • v Ask Model • h Help • q Quit"),
+		subtitleStyle.Render("Model-assistant workspace for loading media, rewriting briefs, and preparing generation."),
+		navStyle.Render("1 Welcome • 2 Files • 3 Plan • 4 Bite • 5 Transcript • T TXT • X XML • v Ask Model • a Accept • h Help • q Quit"),
 	)
 
 	body := boxStyle.Render(m.viewport.View())
@@ -574,6 +578,21 @@ func (m Model) handleBridgeFinished(msg bridgeFinishedMsg) Model {
 	return m
 }
 
+func (m Model) acceptAssistantSuggestion() Model {
+	if strings.TrimSpace(m.assistantResult) == "" {
+		m.status = "No model assistant suggestion to accept yet. Press v first."
+		return m
+	}
+	brief := extractSuggestedBrief(m.assistantResult)
+	m.brief.SetValue(brief)
+	m.activeScreen = screenFiles
+	m.focus = 2
+	m.blurFocused()
+	m.focusFocused()
+	m.status = "Accepted model suggestion into the creative brief field."
+	return m
+}
+
 func (m Model) currentConfig() bridge.Config {
 	config := m.config
 	config.TranscriptPath = strings.TrimSpace(m.transcript.Value())
@@ -604,7 +623,7 @@ func (m Model) screenContent() string {
 			fmt.Sprintf("message:   %s", m.bridgeError.Message),
 			fmt.Sprintf("hint:      %s", m.bridgeError.Hint),
 			"",
-			"This prototype surfaces bridge errors without running generation or mutating output files.",
+			"This app surfaces bridge errors without mutating output files.",
 			"Press 2 to return to path/file selection or h for help.",
 		}, "\n")
 	}
@@ -628,16 +647,16 @@ func (m Model) welcomeContent() string {
 		"Welcome / setup",
 		"",
 		"BiteBuilder turns a timecoded transcript and Premiere XML into a sequence plan and edit artifacts.",
-		"This Go TUI is intentionally read-only for the prototype lane:",
+		"This Go TUI is now the interactive BiteBuilder workspace for:",
 		"  • collect and review file paths",
 		"  • preview sequence-plan and bite-detail screens",
-		"  • validate the existing Python bridge request",
+		"  • ask the Python model assistant for a stronger creative brief",
 		"  • surface structured bridge errors",
 		"",
 		fmt.Sprintf("Repository: %s", defaultIfBlank(m.config.RepoRoot, "(not set)")),
 		fmt.Sprintf("Python:     %s", defaultIfBlank(m.config.Python, "(not set)")),
 		"",
-		"Press 2 for path/file selection, 3 for plan viewer, or h for help.",
+		"Press 2 for path/file selection, type a brief, then press v to ask the model assistant.",
 	}, "\n")
 }
 
@@ -692,6 +711,8 @@ func (m Model) planContent() string {
 			"",
 			m.assistantResult,
 			"",
+			"Press a to accept the Suggested Creative Brief into the editable brief field.",
+			"",
 			"Command:",
 			m.bridgePreview,
 		}, "\n")
@@ -714,7 +735,7 @@ func (m Model) planContent() string {
 	return strings.Join([]string{
 		"Sequence-plan viewer",
 		"",
-		"Prototype plan outline:",
+		"Current workflow outline:",
 		"  1. Parse Premiere XML sequence metadata.",
 		"  2. Align timecoded transcript segments to candidate bite windows.",
 		"  3. Ask the generation lane for ranked bites in a future NDJSON progress stream.",
@@ -732,7 +753,7 @@ func (m Model) biteContent() string {
 		"Bite detail / transcript viewport",
 		"",
 		"Selected bite: Prototype Bite 01",
-		"Status: read-only placeholder until generation transport is wired.",
+		"Status: model-assistant suggestions are live; candidate bite generation is the next wiring step.",
 		"Source XML: " + defaultIfBlank(m.xml.Value(), "(not selected)"),
 		"Transcript: " + defaultIfBlank(m.transcript.Value(), "(not selected)"),
 		"",
@@ -741,7 +762,7 @@ func (m Model) biteContent() string {
 		"  [00:00:08] Guest names the constraint that makes the bite useful.",
 		"  [00:00:18] The key quote resolves the sequence premise.",
 		"",
-		"Actions are intentionally disabled in this prototype: no export, no write, no generation.",
+		"Generation/export actions are still gated until the next NDJSON transport pass.",
 	}, "\n")
 }
 
@@ -751,7 +772,7 @@ func (m Model) transcriptContent() string {
 		"",
 		"Path: " + defaultIfBlank(m.transcript.Value(), "(not selected)"),
 		"",
-		"Read-only transcript preview placeholder:",
+		"Transcript preview placeholder:",
 		"  00:00:00 Speaker A: We need the edit to prove one concise idea.",
 		"  00:00:07 Speaker B: The strongest moment is where the audience understands the tradeoff.",
 		"  00:00:16 Speaker A: Keep the final cut short and evidence-driven.",
@@ -776,11 +797,31 @@ func helpOverlay() string {
 		"  T                Choose transcript .txt in Finder",
 		"  X                Choose Premiere XML .xml in Finder",
 		"  v                Send transcript/XML to model assistant for a creative brief rewrite",
+		"  a                Accept the assistant's Suggested Creative Brief into the brief field",
 		"  h or Esc         Toggle this help overlay",
 		"  q / Ctrl+C       Quit",
 		"",
 		"Bridge boundary: the UI reuses internal/bridge validation and displays structured errors; it does not duplicate subprocess logic.",
 	}, "\n")
+}
+
+func extractSuggestedBrief(suggestion string) string {
+	trimmed := strings.TrimSpace(suggestion)
+	lower := strings.ToLower(trimmed)
+	startLabel := "suggested creative brief:"
+	start := strings.Index(lower, startLabel)
+	if start == -1 {
+		return trimmed
+	}
+	body := strings.TrimSpace(trimmed[start+len(startLabel):])
+	bodyLower := strings.ToLower(body)
+	end := len(body)
+	for _, marker := range []string{"\nwhy this direction works:", "\ncandidate story beats:", "\nprompt tuning notes:"} {
+		if index := strings.Index(bodyLower, marker); index >= 0 && index < end {
+			end = index
+		}
+	}
+	return strings.TrimSpace(body[:end])
 }
 
 func extractAssistantSuggestion(raw string) (string, error) {
@@ -829,6 +870,7 @@ var keys = struct {
 	help             key.Binding
 	escape           key.Binding
 	validate         key.Binding
+	acceptSuggestion key.Binding
 	browseTranscript key.Binding
 	browseXML        key.Binding
 	welcome          key.Binding
@@ -843,6 +885,7 @@ var keys = struct {
 	help:             key.NewBinding(key.WithKeys("h", "?")),
 	escape:           key.NewBinding(key.WithKeys("esc")),
 	validate:         key.NewBinding(key.WithKeys("v", "ctrl+r")),
+	acceptSuggestion: key.NewBinding(key.WithKeys("a")),
 	browseTranscript: key.NewBinding(key.WithKeys("T")),
 	browseXML:        key.NewBinding(key.WithKeys("X")),
 	welcome:          key.NewBinding(key.WithKeys("1")),
