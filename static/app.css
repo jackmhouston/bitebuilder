@@ -606,9 +606,80 @@ pre,
 #acceptedPlanSummary,
 #timelinePreview,
 #logsPanel,
-#jobLog {
+#jobLog,
+#results {
   max-height: 52vh;
   overflow-y: auto;
+}
+
+.result-card.is-focused,
+.transcript-card.is-focused,
+.cut-row.is-focused {
+  outline: 3px solid var(--ink);
+  outline-offset: 2px;
+  box-shadow: inset 0 0 0 2px var(--paper);
+}
+
+.selection-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border: 1px solid var(--ink);
+  background: var(--paper);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.workspace-grid {
+  align-items: start;
+}
+
+.workspace-hero,
+.workspace-lower-panel,
+.workspace-column {
+  display: grid;
+  gap: 12px;
+}
+
+.workspace-hero-head {
+  align-items: start;
+}
+
+.workspace-subhead,
+.workspace-column-note {
+  margin: 0;
+  color: #444;
+}
+
+.workspace-top-actions,
+.workspace-run-actions {
+  justify-content: flex-start;
+}
+
+.workspace-intake-grid {
+  grid-template-columns: 1fr 2fr 0.8fr;
+}
+
+.workspace-source-manager {
+  display: grid;
+  gap: 10px;
+}
+
+.source-card {
+  gap: 10px;
+}
+
+.workspace-notes-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.workspace-column {
+  min-height: 0;
+}
+
+.workspace-column .results,
+.workspace-column .chat-log {
+  min-height: 0;
 }
 
 @media (max-width: 1060px) {

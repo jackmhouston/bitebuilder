@@ -14,18 +14,20 @@
         </a>
       </header>
 
-      <nav class="step-indicator" aria-label="Workflow steps">
-        {% for step in steps %}
-          <a
-            class="step-link{% if step.active %} active{% endif %}{% if step.complete %} complete{% endif %}"
-            href="{{ step.path }}"
-            data-step-link="{{ step.key }}"
-          >
-            <span class="step-index">{{ loop.index }}</span>
-            <span class="step-label">{{ step.label }}</span>
-          </a>
-        {% endfor %}
-      </nav>
+      {% if steps %}
+        <nav class="step-indicator" aria-label="Workflow steps">
+          {% for step in steps %}
+            <a
+              class="step-link{% if step.active %} active{% endif %}{% if step.complete %} complete{% endif %}"
+              href="{{ step.path }}"
+              data-step-link="{{ step.key }}"
+            >
+              <span class="step-index">{{ loop.index }}</span>
+              <span class="step-label">{{ step.label }}</span>
+            </a>
+          {% endfor %}
+        </nav>
+      {% endif %}
 
       <main class="main-stage">
         <h1>{{ page_title }}</h1>

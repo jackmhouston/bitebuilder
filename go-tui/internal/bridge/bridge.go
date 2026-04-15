@@ -21,17 +21,26 @@ const (
 
 // Config is the Go TUI's side-effect boundary for invoking the existing Python CLI.
 type Config struct {
-	RepoRoot       string
-	Python         string
-	TranscriptPath string
-	XMLPath        string
-	SequencePlan   string
-	Brief          string
-	OutputDir      string
-	Model          string
-	Host           string
-	TimeoutSeconds int
-	ThinkingMode   string
+	RepoRoot                   string
+	Python                     string
+	TranscriptPath             string
+	XMLPath                    string
+	SecondaryTranscriptPath    string
+	SecondaryXMLPath           string
+	SequencePlan               string
+	Brief                      string
+	RefineInstruction          string
+	SelectedBoardJSON          string
+	OutputDir                  string
+	Model                      string
+	Host                       string
+	TimeoutSeconds             int
+	ThinkingMode               string
+	OptionID                   string
+	MaxBiteDurationSeconds     float64
+	MaxTotalDurationSeconds    float64
+	RequireChangedSelectedCuts bool
+	RefinementRetries          int
 }
 
 // RunResult captures the completed Python process output for display in the TUI.
@@ -51,13 +60,14 @@ func DefaultConfig(startDir string) Config {
 		root = found
 	}
 	return Config{
-		RepoRoot:       root,
-		Python:         defaultPython,
-		OutputDir:      "./output",
-		Model:          defaultModel,
-		Host:           defaultHost,
-		TimeoutSeconds: defaultTimeoutSeconds,
-		ThinkingMode:   defaultThinkingMode,
+		RepoRoot:          root,
+		Python:            defaultPython,
+		OutputDir:         "./output",
+		Model:             defaultModel,
+		Host:              defaultHost,
+		TimeoutSeconds:    defaultTimeoutSeconds,
+		ThinkingMode:      defaultThinkingMode,
+		RefinementRetries: 1,
 	}
 }
 
@@ -88,6 +98,16 @@ func FindRepoRoot(startDir string) (string, error) {
 	}
 }
 
+func appendOptionalSecondarySourceArgs(args []string, c Config) []string {
+	if strings.TrimSpace(c.SecondaryTranscriptPath) != "" {
+		args = append(args, "--transcript-b", c.SecondaryTranscriptPath)
+	}
+	if strings.TrimSpace(c.SecondaryXMLPath) != "" {
+		args = append(args, "--xml-b", c.SecondaryXMLPath)
+	}
+	return args
+}
+
 // BuildFirstPassArgs validates Config and returns arguments for the current Python CLI first-pass path.
 func (c Config) BuildFirstPassArgs() ([]string, error) {
 	if strings.TrimSpace(c.TranscriptPath) == "" {
@@ -97,7 +117,7 @@ func (c Config) BuildFirstPassArgs() ([]string, error) {
 		return nil, errors.New("XML path is required")
 	}
 	if strings.TrimSpace(c.Brief) == "" {
-		return nil, errors.New("creative brief is required")
+		return nil, errors.New("creative ask is required")
 	}
 	if strings.TrimSpace(c.RepoRoot) == "" {
 		return nil, errors.New("repo root is required")
@@ -121,6 +141,145 @@ func (c Config) BuildFirstPassArgs() ([]string, error) {
 		"--timeout", fmt.Sprintf("%d", c.TimeoutSeconds),
 		"--thinking-mode", defaultIfBlank(c.ThinkingMode, defaultThinkingMode),
 	}
+	args = appendOptionalSecondarySourceArgs(args, c)
+	return args, nil
+}
+
+// BuildGenerationArgs validates Config and returns arguments for the Python NDJSON generation bridge.
+func (c Config) BuildGenerationArgs() ([]string, error) {
+	if strings.TrimSpace(c.TranscriptPath) == "" {
+		return nil, errors.New("transcript path is required")
+	}
+	if strings.TrimSpace(c.XMLPath) == "" {
+		return nil, errors.New("XML path is required")
+	}
+	if strings.TrimSpace(c.Brief) == "" {
+		return nil, errors.New("creative ask is required")
+	}
+	if strings.TrimSpace(c.RepoRoot) == "" {
+		return nil, errors.New("repo root is required")
+	}
+	if strings.TrimSpace(c.Python) == "" {
+		return nil, errors.New("python executable is required")
+	}
+	if c.TimeoutSeconds <= 0 {
+		return nil, errors.New("timeout must be greater than zero")
+	}
+
+	args := []string{
+		filepath.Join(c.RepoRoot, "bitebuilder.py"),
+		"--go-tui-generate",
+		"--transcript", c.TranscriptPath,
+		"--xml", c.XMLPath,
+		"--brief", c.Brief,
+		"--options", "1",
+		"--output", defaultIfBlank(c.OutputDir, "./output"),
+		"--model", defaultIfBlank(c.Model, defaultModel),
+		"--host", defaultIfBlank(c.Host, defaultHost),
+		"--timeout", fmt.Sprintf("%d", c.TimeoutSeconds),
+		"--thinking-mode", defaultIfBlank(c.ThinkingMode, defaultThinkingMode),
+	}
+	args = appendOptionalSecondarySourceArgs(args, c)
+	return args, nil
+}
+
+// BuildRefinementArgs validates Config and returns arguments for the Python NDJSON refinement bridge.
+func (c Config) BuildRefinementArgs() ([]string, error) {
+	if strings.TrimSpace(c.TranscriptPath) == "" {
+		return nil, errors.New("transcript path is required")
+	}
+	if strings.TrimSpace(c.XMLPath) == "" {
+		return nil, errors.New("XML path is required")
+	}
+	if strings.TrimSpace(c.SequencePlan) == "" {
+		return nil, errors.New("sequence plan path is required")
+	}
+	if strings.TrimSpace(c.RefineInstruction) == "" {
+		return nil, errors.New("refine instruction is required")
+	}
+	if strings.TrimSpace(c.RepoRoot) == "" {
+		return nil, errors.New("repo root is required")
+	}
+	if strings.TrimSpace(c.Python) == "" {
+		return nil, errors.New("python executable is required")
+	}
+	if c.TimeoutSeconds <= 0 {
+		return nil, errors.New("timeout must be greater than zero")
+	}
+	if c.RefinementRetries < 0 {
+		return nil, errors.New("refinement retries must be zero or greater")
+	}
+
+	args := []string{
+		filepath.Join(c.RepoRoot, "bitebuilder.py"),
+		"--go-tui-refine",
+		"--transcript", c.TranscriptPath,
+		"--xml", c.XMLPath,
+		"--sequence-plan", c.SequencePlan,
+		"--refine-instruction", c.RefineInstruction,
+		"--output", defaultIfBlank(c.OutputDir, "./output"),
+		"--model", defaultIfBlank(c.Model, defaultModel),
+		"--host", defaultIfBlank(c.Host, defaultHost),
+		"--timeout", fmt.Sprintf("%d", c.TimeoutSeconds),
+		"--thinking-mode", defaultIfBlank(c.ThinkingMode, defaultThinkingMode),
+		"--refinement-retries", fmt.Sprintf("%d", c.RefinementRetries),
+	}
+	args = appendOptionalSecondarySourceArgs(args, c)
+	if strings.TrimSpace(c.OptionID) != "" {
+		args = append(args, "--option-id", c.OptionID)
+	}
+	if c.MaxBiteDurationSeconds > 0 {
+		args = append(args, "--max-bite-duration", fmt.Sprintf("%g", c.MaxBiteDurationSeconds))
+	}
+	if c.MaxTotalDurationSeconds > 0 {
+		args = append(args, "--max-total-duration", fmt.Sprintf("%g", c.MaxTotalDurationSeconds))
+	}
+	if c.RequireChangedSelectedCuts {
+		args = append(args, "--require-changed-cuts")
+	}
+	return args, nil
+}
+
+// BuildExportArgs validates Config and returns arguments for the Python NDJSON final-export bridge.
+func (c Config) BuildExportArgs() ([]string, error) {
+	if strings.TrimSpace(c.TranscriptPath) == "" {
+		return nil, errors.New("transcript path is required")
+	}
+	if strings.TrimSpace(c.XMLPath) == "" {
+		return nil, errors.New("XML path is required")
+	}
+	if strings.TrimSpace(c.SequencePlan) == "" {
+		return nil, errors.New("sequence plan path is required")
+	}
+	if strings.TrimSpace(c.RepoRoot) == "" {
+		return nil, errors.New("repo root is required")
+	}
+	if strings.TrimSpace(c.Python) == "" {
+		return nil, errors.New("python executable is required")
+	}
+	if c.TimeoutSeconds <= 0 {
+		return nil, errors.New("timeout must be greater than zero")
+	}
+
+	args := []string{
+		filepath.Join(c.RepoRoot, "bitebuilder.py"),
+		"--go-tui-export",
+		"--transcript", c.TranscriptPath,
+		"--xml", c.XMLPath,
+		"--sequence-plan", c.SequencePlan,
+		"--output", defaultIfBlank(c.OutputDir, "./output"),
+		"--model", defaultIfBlank(c.Model, defaultModel),
+		"--host", defaultIfBlank(c.Host, defaultHost),
+		"--timeout", fmt.Sprintf("%d", c.TimeoutSeconds),
+		"--thinking-mode", defaultIfBlank(c.ThinkingMode, defaultThinkingMode),
+	}
+	args = appendOptionalSecondarySourceArgs(args, c)
+	if strings.TrimSpace(c.OptionID) != "" {
+		args = append(args, "--option-id", c.OptionID)
+	}
+	if strings.TrimSpace(c.SelectedBoardJSON) != "" {
+		args = append(args, "--selected-bites-json", c.SelectedBoardJSON)
+	}
 	return args, nil
 }
 
@@ -142,7 +301,7 @@ func (c Config) BuildReadOnlyBridgeArgs(operation string) ([]string, error) {
 
 	switch operation {
 	case "setup":
-	case "media", "transcript", "assistant":
+	case "media", "transcript", "summary", "assistant":
 		if strings.TrimSpace(c.TranscriptPath) == "" {
 			return nil, errors.New("transcript path is required")
 		}
@@ -178,11 +337,23 @@ func (c Config) BuildReadOnlyBridgeArgs(operation string) ([]string, error) {
 	if strings.TrimSpace(c.XMLPath) != "" {
 		args = append(args, "--xml", c.XMLPath)
 	}
+	if strings.TrimSpace(c.SecondaryTranscriptPath) != "" {
+		args = append(args, "--transcript-b", c.SecondaryTranscriptPath)
+	}
+	if strings.TrimSpace(c.SecondaryXMLPath) != "" {
+		args = append(args, "--xml-b", c.SecondaryXMLPath)
+	}
 	if strings.TrimSpace(c.SequencePlan) != "" {
 		args = append(args, "--sequence-plan", c.SequencePlan)
 	}
 	if strings.TrimSpace(c.Brief) != "" {
 		args = append(args, "--brief", c.Brief)
+	}
+	if operation == "assistant" && strings.TrimSpace(c.RefineInstruction) != "" {
+		args = append(args, "--refine-instruction", c.RefineInstruction)
+	}
+	if operation == "assistant" && strings.TrimSpace(c.SelectedBoardJSON) != "" {
+		args = append(args, "--selected-bites-json", c.SelectedBoardJSON)
 	}
 	return args, nil
 }
@@ -210,6 +381,87 @@ func (Runner) RunBridgeOperation(ctx context.Context, config Config, operation s
 	}
 	if err != nil {
 		return result, fmt.Errorf("run BiteBuilder bridge operation %s: %w", operation, err)
+	}
+	return result, nil
+}
+
+// RunGeneration invokes the Python NDJSON generation bridge and returns captured output.
+func (Runner) RunGeneration(ctx context.Context, config Config) (RunResult, error) {
+	args, err := config.BuildGenerationArgs()
+	if err != nil {
+		return RunResult{}, err
+	}
+
+	cmd := exec.CommandContext(ctx, config.Python, args...)
+	cmd.Dir = config.RepoRoot
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err = cmd.Run()
+	result := RunResult{
+		Command: strings.Join(append([]string{config.Python}, args...), " "),
+		Stdout:  stdout.String(),
+		Stderr:  stderr.String(),
+	}
+	if err != nil {
+		return result, fmt.Errorf("run BiteBuilder generation bridge: %w", err)
+	}
+	return result, nil
+}
+
+// RunRefinement invokes the Python NDJSON refinement bridge and returns captured output.
+func (Runner) RunRefinement(ctx context.Context, config Config) (RunResult, error) {
+	args, err := config.BuildRefinementArgs()
+	if err != nil {
+		return RunResult{}, err
+	}
+
+	cmd := exec.CommandContext(ctx, config.Python, args...)
+	cmd.Dir = config.RepoRoot
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err = cmd.Run()
+	result := RunResult{
+		Command: strings.Join(append([]string{config.Python}, args...), " "),
+		Stdout:  stdout.String(),
+		Stderr:  stderr.String(),
+	}
+	if err != nil {
+		return result, fmt.Errorf("run BiteBuilder refinement bridge: %w", err)
+	}
+	return result, nil
+}
+
+// RunExport invokes the Python NDJSON final-export bridge and returns captured output.
+func (Runner) RunExport(ctx context.Context, config Config) (RunResult, error) {
+	args, err := config.BuildExportArgs()
+	if err != nil {
+		return RunResult{}, err
+	}
+
+	cmd := exec.CommandContext(ctx, config.Python, args...)
+	cmd.Dir = config.RepoRoot
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err = cmd.Run()
+	result := RunResult{
+		Command: strings.Join(append([]string{config.Python}, args...), " "),
+		Stdout:  stdout.String(),
+		Stderr:  stderr.String(),
+	}
+	if err != nil {
+		return result, fmt.Errorf("run BiteBuilder export bridge: %w", err)
 	}
 	return result, nil
 }

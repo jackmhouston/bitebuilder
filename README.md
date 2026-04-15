@@ -87,6 +87,84 @@ python3 -m venv .venv
 .venv/bin/python bitebuilder.py --help
 ```
 
+## Tonight MVP Smoke
+
+Use the CLI/core path as the supported quick-start surface. The browser UI is
+available for local exploration, but it is best-effort unless you also run the
+Flask smoke below.
+
+Set up a local environment:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+```
+
+For fast local testing, use the repo launcher:
+
+```bash
+make print-alias
+alias bitebuilder="$PWD/bin/bitebuilder"
+bitebuilder smoke
+```
+
+Then `bitebuilder` opens the Go TUI after checking/starting the configured local
+model runtime. `bitebuilder tui` skips model startup, and `bitebuilder model`
+only starts/checks the model. If your model is not already running, set one of:
+
+```bash
+export BITEBUILDER_MODEL_PATH=/path/to/model.gguf
+# or
+export BITEBUILDER_MODEL_COMMAND='llama-server --host 127.0.0.1 --port 18084 --model /path/to/model.gguf'
+```
+
+Run the deterministic no-model XML smoke. This uses tracked sanitized fixtures
+and does not require Ollama:
+
+```bash
+.venv/bin/python bitebuilder.py \
+  --sequence-plan tests/fixtures/tonight_mvp/sequence_plan.json \
+  --transcript tests/fixtures/tonight_mvp/transcript.txt \
+  --xml tests/fixtures/tonight_mvp/source.xmeml \
+  --output ./output/tonight-smoke
+```
+
+For live editorial generation, start the configured local model runtime first,
+then run either the guided CLI or a direct generation:
+
+```bash
+.venv/bin/python bitebuilder.py --guided
+```
+
+```bash
+.venv/bin/python bitebuilder.py \
+  --transcript /path/to/transcript.txt \
+  --xml /path/to/source.xml \
+  --brief "45 second proof of concept with a clear hook and strong close" \
+  --output ./output/live-test
+```
+
+Optional Flask route smoke:
+
+```bash
+.venv/bin/python - <<'PY'
+import webapp
+client = webapp.app.test_client()
+for path in [
+    "/",
+    "/project/brief",
+    "/project/chat",
+    "/project/generate",
+    "/project/export",
+    "/project/logs",
+    "/api/models",
+]:
+    resp = client.get(path)
+    assert resp.status_code < 500, (path, resp.status_code)
+print("flask smoke ok")
+PY
+```
+
 CLI example:
 
 ```bash

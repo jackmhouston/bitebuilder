@@ -6,6 +6,8 @@ from unittest.mock import patch
 
 import bitebuilder
 from generator.sequence_plan import SequencePlan
+from parser.premiere_xml import SourceMetadata
+from parser.transcript import TranscriptSegment
 
 
 TRANSCRIPT_TEXT = """00:00:00:00 - 00:00:02:00
@@ -72,7 +74,127 @@ XML_TEXT = """<?xml version="1.0" encoding="UTF-8"?>
 """
 
 
+def source_metadata(duration=240):
+    return SourceMetadata(
+        source_name="clip.mov",
+        source_path="/Volumes/Test/clip.mov",
+        pathurl="file:///Volumes/Test/clip.mov",
+        timebase=24,
+        ntsc=False,
+        duration=duration,
+        width=1920,
+        height=1080,
+        audio_depth=24,
+        audio_samplerate=48000,
+        audio_channels=2,
+    )
+
+
 class PipelineTests(unittest.TestCase):
+    def test_candidate_scoring_matches_generic_brief_keywords(self):
+        segments = [
+            TranscriptSegment(
+                "00:00:00:00",
+                "00:00:06:00",
+                "Speaker 1",
+                "The handoff became clear, and editors made decisions in minutes.",
+            ),
+            TranscriptSegment(
+                "00:00:06:00",
+                "00:00:12:00",
+                "Speaker 2",
+                "The battery microgrid operated near the old utility meter.",
+            ),
+        ]
+
+        shortlist = bitebuilder.build_candidate_shortlist(
+            segments=segments,
+            source=source_metadata(),
+            brief="A proof cut about handoff clarity and decision speed.",
+            limit=2,
+        )
+
+        self.assertEqual(shortlist[0]["segment_index"], 0)
+        self.assertIn("brief keyword match", shortlist[0]["reasons"])
+        self.assertNotIn("finance framing", shortlist[0]["reasons"])
+
+    def test_speaker_balance_does_not_assume_speaker_one_roles(self):
+        segments = [
+            TranscriptSegment(
+                "00:00:00:00",
+                "00:00:05:00",
+                "Speaker 1",
+                "This line has the same clear proof and complete thought.",
+            ),
+            TranscriptSegment(
+                "00:00:05:00",
+                "00:00:10:00",
+                "Speaker 2",
+                "This line has the same clear proof and complete thought.",
+            ),
+        ]
+
+        shortlist = bitebuilder.build_candidate_shortlist(
+            segments=segments,
+            source=source_metadata(),
+            brief="Clear proof with a complete thought.",
+            speaker_balance="worker",
+            limit=2,
+        )
+        by_index = {item["segment_index"]: item for item in shortlist}
+
+        self.assertEqual(by_index[0]["score"], by_index[1]["score"])
+        self.assertNotIn("speaker bias: worker", by_index[1]["reasons"])
+
+    def test_speaker_mix_noops_without_explicit_variety_request(self):
+        response = {"selection_status": "ok", "options": []}
+
+        updated, notes = bitebuilder.enforce_requested_speaker_mix(
+            response=response,
+            candidates=[],
+            source=source_metadata(),
+            editorial_text="clear proof with a complete thought",
+            target_duration_range=None,
+        )
+
+        self.assertIs(updated, response)
+        self.assertEqual(notes, [])
+
+    def test_fallback_speaker_variety_does_not_assume_speaker_two(self):
+        candidates = [
+            {
+                "segment_index": 0,
+                "tc_in": "00:00:00:00",
+                "tc_out": "00:00:05:00",
+                "speaker": "Alex",
+                "text": "This is a clear setup with useful context.",
+                "duration_seconds": 5,
+                "score": 10,
+                "roles": ["CONTEXT"],
+            },
+            {
+                "segment_index": 1,
+                "tc_in": "00:00:05:00",
+                "tc_out": "00:00:10:00",
+                "speaker": "Jordan",
+                "text": "This is a proof point from another perspective.",
+                "duration_seconds": 5,
+                "score": 9,
+                "roles": ["PROOF"],
+            },
+        ]
+
+        response = bitebuilder.build_fallback_response(
+            candidates=candidates,
+            source=source_metadata(),
+            num_options=1,
+            target_duration_range=(8, 12),
+            editorial_text="include another voice for speaker variety",
+        )
+
+        speakers = {cut["speaker"] for cut in response["options"][0]["cuts"]}
+        self.assertEqual(speakers, {"Alex", "Jordan"})
+
     def test_run_pipeline_writes_xml_and_debug_artifacts(self):
         mocked_response = {
             "selection_status": "ok",

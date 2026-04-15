@@ -1,0 +1,283 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VENV_PY="$ROOT/.venv/bin/python"
+HOST_WAS_EXPLICIT="${BITEBUILDER_HOST+x}"
+MODEL_HOST="${BITEBUILDER_HOST:-http://127.0.0.1:18084}"
+MODEL_NAME="${BITEBUILDER_MODEL:-gemma-4-E2B-it-Q8_0.gguf}"
+THINKING_MODE="${BITEBUILDER_THINKING_MODE:-off}"
+MODEL_PID_FILE="$ROOT/.bitebuilder-model.pid"
+
+usage() {
+  cat <<USAGE
+BiteBuilder dev launcher
+
+Usage:
+  bitebuilder              Start/check model runtime, then open the Go TUI
+  bitebuilder up           Same as default
+  bitebuilder tui          Open the Go TUI only (falls back to Python TUI if Go is unavailable)
+  bitebuilder model        Start/check local model runtime
+  bitebuilder smoke        Run deterministic no-model XML smoke
+  bitebuilder test         Run Python + Go tests and compile smoke
+  bitebuilder flask-smoke  Smoke-test Flask routes
+  bitebuilder stop-model   Stop model process started by this launcher
+  bitebuilder help         Show this help
+
+Model startup behavior:
+  - If BITEBUILDER_MODEL_COMMAND is set, it is used verbatim.
+  - Else if llama-server and BITEBUILDER_MODEL_PATH are available, llama-server starts on 127.0.0.1:18084.
+  - Else if ollama is available, ollama serve is started when needed.
+  - If a runtime is already reachable at BITEBUILDER_HOST, nothing is started.
+
+Useful env:
+  BITEBUILDER_HOST=$MODEL_HOST
+  BITEBUILDER_MODEL=$MODEL_NAME
+  BITEBUILDER_THINKING_MODE=$THINKING_MODE
+  BITEBUILDER_MODEL_PATH=/path/to/model.gguf
+  BITEBUILDER_MODEL_COMMAND='llama-server --host 127.0.0.1 --port 18084 --model /path/to/model.gguf'
+USAGE
+}
+
+ensure_venv() {
+  if [[ ! -x "$VENV_PY" ]]; then
+    python3 -m venv "$ROOT/.venv"
+  fi
+  PIP_DISABLE_PIP_VERSION_CHECK=1 "$VENV_PY" -m pip install -q -r "$ROOT/requirements.txt"
+}
+
+model_reachable() {
+  ensure_venv
+  "$VENV_PY" - <<'PY'
+from llm.ollama_client import check_connection, host_candidates
+import os, sys
+preferred = os.environ.get("BITEBUILDER_HOST")
+sys.exit(0 if any(check_connection(host) for host in host_candidates(preferred)) else 1)
+PY
+}
+
+resolve_runtime() {
+  ensure_venv
+  local resolved
+  resolved="$("$VENV_PY" - <<'PY'
+from llm.ollama_client import DEFAULT_HOST, DEFAULT_MODEL, check_connection, host_candidates, list_models
+import os, sys
+
+requested_host = os.environ.get("BITEBUILDER_HOST") or DEFAULT_HOST
+requested_model = os.environ.get("BITEBUILDER_MODEL") or DEFAULT_MODEL
+
+def pick_dev_model(models: list[str]) -> str:
+    preferred_prefixes = (
+        'gemma3:',
+        'llama3.2:3b',
+        'llama3.2:1b',
+        'llama3.2:',
+        'gemma4:e4b',
+        'gemma4:',
+        'llama3:',
+        'qwen',
+        'mistral',
+    )
+    excluded = ('resume-matcher', 'embed', 'nomic-embed')
+    for prefix in preferred_prefixes:
+        for model in models:
+            lowered = model.lower()
+            if lowered.startswith(prefix) and not any(bad in lowered for bad in excluded):
+                return model
+    for model in models:
+        lowered = model.lower()
+        if not any(bad in lowered for bad in excluded):
+            return model
+    return models[0]
+
+for host in host_candidates(requested_host):
+    if not check_connection(host):
+        continue
+    models = list_models(host)
+    if not models:
+        print(host)
+        print(requested_model)
+        sys.exit(0)
+    model_names = [item.split(":")[0] for item in models]
+    if requested_model in models or requested_model.split(":")[0] in model_names:
+        print(host)
+        print(requested_model)
+        sys.exit(0)
+    chosen = pick_dev_model(models)
+    print(
+        f"Requested model {requested_model!r} was not listed at {host}; using {chosen!r} for dev testing.",
+        file=sys.stderr,
+    )
+    print(host)
+    print(chosen)
+    sys.exit(0)
+
+sys.exit(1)
+PY
+  )"
+  MODEL_HOST="$(sed -n '1p' <<<"$resolved")"
+  MODEL_NAME="$(sed -n '2p' <<<"$resolved")"
+  export BITEBUILDER_HOST="$MODEL_HOST"
+  export BITEBUILDER_MODEL="$MODEL_NAME"
+}
+
+wait_for_model() {
+  local attempts="${1:-30}"
+  for _ in $(seq 1 "$attempts"); do
+    if model_reachable >/dev/null 2>&1; then
+      echo "Model runtime reachable at $MODEL_HOST"
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+start_model() {
+  ensure_venv
+  if model_reachable >/dev/null 2>&1; then
+    resolve_runtime
+    echo "Model runtime reachable at $MODEL_HOST using $MODEL_NAME"
+    return 0
+  fi
+
+  if [[ -n "${BITEBUILDER_MODEL_COMMAND:-}" ]]; then
+    echo "Starting model with BITEBUILDER_MODEL_COMMAND..."
+    (cd "$ROOT" && nohup bash -lc "$BITEBUILDER_MODEL_COMMAND" > "$ROOT/.bitebuilder-model.log" 2>&1 & echo $! > "$MODEL_PID_FILE")
+  elif command -v llama-server >/dev/null 2>&1 && [[ -n "${BITEBUILDER_MODEL_PATH:-}" ]]; then
+    echo "Starting llama-server for $BITEBUILDER_MODEL_PATH..."
+    (cd "$ROOT" && nohup llama-server --host 127.0.0.1 --port 18084 --model "$BITEBUILDER_MODEL_PATH" > "$ROOT/.bitebuilder-model.log" 2>&1 & echo $! > "$MODEL_PID_FILE")
+  elif command -v ollama >/dev/null 2>&1 && [[ -z "$HOST_WAS_EXPLICIT" || "$MODEL_HOST" == *":11434"* ]]; then
+    if [[ -z "$HOST_WAS_EXPLICIT" ]]; then
+      MODEL_HOST="http://127.0.0.1:11434"
+      export BITEBUILDER_HOST="$MODEL_HOST"
+    fi
+    echo "Starting ollama serve..."
+    (cd "$ROOT" && nohup ollama serve > "$ROOT/.bitebuilder-model.log" 2>&1 & echo $! > "$MODEL_PID_FILE")
+  else
+    cat >&2 <<ERR
+No reachable model runtime at $MODEL_HOST, and no supported startup command was found.
+Set one of:
+  BITEBUILDER_MODEL_COMMAND='llama-server --host 127.0.0.1 --port 18084 --model /path/to/model.gguf'
+  BITEBUILDER_MODEL_PATH=/path/to/model.gguf   # when llama-server is on PATH
+Or start Ollama/llama-server manually, then rerun: bitebuilder tui
+ERR
+    return 1
+  fi
+
+  wait_for_model 45 || {
+    echo "Model did not become reachable. See $ROOT/.bitebuilder-model.log" >&2
+    return 1
+  }
+}
+
+stop_model() {
+  if [[ ! -f "$MODEL_PID_FILE" ]]; then
+    echo "No model PID file at $MODEL_PID_FILE"
+    return 0
+  fi
+  local pid
+  pid="$(cat "$MODEL_PID_FILE")"
+  if [[ -n "$pid" ]] && kill -0 "$pid" >/dev/null 2>&1; then
+    kill "$pid"
+    echo "Stopped model process $pid"
+  else
+    echo "Model process $pid is not running"
+  fi
+  rm -f "$MODEL_PID_FILE"
+}
+
+run_tui() {
+  ensure_venv
+  resolve_runtime || true
+  if command -v go >/dev/null 2>&1; then
+    (cd "$ROOT/go-tui" && go run ./cmd/bitebuilder-tui \
+      --repo "$ROOT" \
+      --python "$VENV_PY" \
+      --model "$MODEL_NAME" \
+      --host "$MODEL_HOST" \
+      --thinking-mode "$THINKING_MODE" \
+      "$@")
+  else
+    echo "Go not found; falling back to Python TUI."
+    (cd "$ROOT" && "$VENV_PY" bitebuilder.py --tui \
+      --model "$MODEL_NAME" \
+      --host "$MODEL_HOST" \
+      --thinking-mode "$THINKING_MODE" \
+      "$@")
+  fi
+}
+
+run_smoke() {
+  ensure_venv
+  (cd "$ROOT" && "$VENV_PY" bitebuilder.py \
+    --sequence-plan tests/fixtures/tonight_mvp/sequence_plan.json \
+    --transcript tests/fixtures/tonight_mvp/transcript.txt \
+    --xml tests/fixtures/tonight_mvp/source.xmeml \
+    --output ./output/tonight-smoke)
+}
+
+run_flask_smoke() {
+  ensure_venv
+  (cd "$ROOT" && "$VENV_PY" - <<'PY'
+import webapp
+client = webapp.app.test_client()
+for path in ["/", "/project/brief", "/project/chat", "/project/generate", "/project/export", "/project/logs", "/api/models"]:
+    resp = client.get(path)
+    assert resp.status_code < 500, (path, resp.status_code)
+print("flask smoke ok")
+PY
+  )
+}
+
+run_tests() {
+  ensure_venv
+  (cd "$ROOT" && PYTHONDONTWRITEBYTECODE=1 "$VENV_PY" -m unittest discover -s tests -p 'test*.py' -v)
+  (cd "$ROOT" && "$VENV_PY" -m compileall bitebuilder.py webapp.py parser generator llm)
+  (cd "$ROOT" && "$VENV_PY" bitebuilder.py --help >/dev/null && echo "bitebuilder --help ok")
+  run_smoke
+  run_flask_smoke
+  if command -v go >/dev/null 2>&1; then
+    (cd "$ROOT/go-tui" && go test ./...)
+  else
+    echo "Go not found; skipping go-tui tests."
+  fi
+}
+
+cmd="${1:-up}"
+if [[ $# -gt 0 ]]; then
+  shift
+fi
+
+case "$cmd" in
+  up)
+    start_model
+    run_tui "$@"
+    ;;
+  tui)
+    run_tui "$@"
+    ;;
+  model)
+    start_model
+    ;;
+  stop-model)
+    stop_model
+    ;;
+  smoke)
+    run_smoke
+    ;;
+  flask-smoke)
+    run_flask_smoke
+    ;;
+  test)
+    run_tests
+    ;;
+  help|-h|--help)
+    usage
+    ;;
+  *)
+    echo "Unknown command: $cmd" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

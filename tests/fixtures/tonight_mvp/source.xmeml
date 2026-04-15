@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xmeml version="4">
+  <sequence>
+    <name>Tonight Fixture Sequence</name>
+    <rate>
+      <timebase>24</timebase>
+      <ntsc>FALSE</ntsc>
+    </rate>
+    <media>
+      <video>
+        <format>
+          <samplecharacteristics>
+            <width>1920</width>
+            <height>1080</height>
+          </samplecharacteristics>
+        </format>
+      </video>
+      <audio>
+        <format>
+          <samplecharacteristics>
+            <depth>24</depth>
+            <samplerate>48000</samplerate>
+          </samplecharacteristics>
+        </format>
+      </audio>
+    </media>
+  </sequence>
+  <file id="file-1">
+    <name>source &amp; proof.mov</name>
+    <pathurl>file:///Volumes/Demo/Bite%20&amp;%20Builder/source%20proof.mov</pathurl>
+    <rate>
+      <timebase>24</timebase>
+      <ntsc>FALSE</ntsc>
+    </rate>
+    <duration>360</duration>
+    <media>
+      <video>
+        <samplecharacteristics>
+          <width>1920</width>
+          <height>1080</height>
+        </samplecharacteristics>
+      </video>
+      <audio>
+        <samplecharacteristics>
+          <depth>24</depth>
+          <samplerate>48000</samplerate>
+        </samplecharacteristics>
+        <channelcount>2</channelcount>
+      </audio>
+    </media>
+  </file>
+</xmeml>

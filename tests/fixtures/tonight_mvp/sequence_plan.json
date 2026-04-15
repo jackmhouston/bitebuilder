@@ -1,0 +1,42 @@
+{
+  "schema_version": "sequence_plan.v1",
+  "project_context": "Sanitized interview fixture for no-model BiteBuilder smoke testing.",
+  "goal": "Build a concise proof-of-concept cut about trust and handoff clarity.",
+  "options": [
+    {
+      "option_id": "option-proof",
+      "name": "Tonight Proof Cut",
+      "description": "A tiny deterministic sequence that proves XMEML rendering without a live model.",
+      "estimated_duration_seconds": 10,
+      "bites": [
+        {
+          "bite_id": "bite-001",
+          "segment_index": 0,
+          "tc_in": "00:00:00:00",
+          "tc_out": "00:00:05:00",
+          "speaker": "Speaker 1",
+          "text": "The real challenge is not speed, it is trust in the first draft.",
+          "purpose": "HOOK",
+          "status": "selected"
+        },
+        {
+          "bite_id": "bite-002",
+          "segment_index": 1,
+          "tc_in": "00:00:05:00",
+          "tc_out": "00:00:10:00",
+          "speaker": "Speaker 2",
+          "text": "When the handoff is clear, the editor can make a decision in minutes.",
+          "purpose": "PROOF",
+          "status": "selected"
+        }
+      ]
+    }
+  ],
+  "revision_log": [
+    {
+      "revision": 1,
+      "action": "sanitized_fixture",
+      "summary": "Tracked no-model smoke fixture."
+    }
+  ]
+}

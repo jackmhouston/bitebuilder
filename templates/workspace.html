@@ -1,0 +1,172 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="panel-grid workspace-grid">
+    <section class="panel panel-span-12 workspace-hero">
+      <div class="section-head workspace-hero-head">
+        <div>
+          <h2>Selection-first edit board</h2>
+          <p class="workspace-subhead">Load files, search the transcript, build the lane, then generate. This replaces the mushy TUI pass for now. Multi-source combine currently expects source pairs that point at the same underlying master clip.</p>
+        </div>
+        <div class="actions workspace-top-actions">
+          <button id="loadSolarDemoButton" class="button button-secondary" type="button">Load solar demo</button>
+          <button id="saveProjectButton" class="button button-secondary" type="button">Save project</button>
+          <label class="button button-secondary file-button">
+            <span>Load project</span>
+            <input id="projectFileInput" type="file" accept=".json,.bitebuilder-project.json">
+          </label>
+          <button id="startFreshButton" class="button button-secondary" type="button">Start fresh</button>
+        </div>
+      </div>
+
+      <div class="field-grid workspace-intake-grid">
+        <label>
+          <span>Project title</span>
+          <input id="projectTitleInput" type="text" placeholder="Solar cut test">
+        </label>
+        <div class="workspace-source-manager">
+          <div class="section-head">
+            <h3>Sources</h3>
+            <div class="actions">
+              <button id="addSourceButton" class="button button-secondary" type="button">Add source</button>
+            </div>
+          </div>
+          <div id="sourceList" class="results"></div>
+        </div>
+        <label>
+          <span>Variant name</span>
+          <input id="variantNameInput" type="text" value="v1">
+        </label>
+      </div>
+
+      <div class="stats-grid workspace-stats-grid">
+        <article class="stat-card">
+          <span>Transcript</span>
+          <strong data-bind="transcriptName">No transcript loaded</strong>
+        </article>
+        <article class="stat-card">
+          <span>Premiere XML</span>
+          <strong data-bind="xmlName">No XML loaded</strong>
+        </article>
+        <article class="stat-card">
+          <span>Segments</span>
+          <strong data-bind="segmentCount">0</strong>
+        </article>
+        <article class="stat-card">
+          <span>Model</span>
+          <strong data-bind="modelName">Checking local models…</strong>
+        </article>
+        <article class="stat-card">
+          <span>Options</span>
+          <strong data-bind="optionsSummary">3</strong>
+        </article>
+        <article class="stat-card">
+          <span>Variant</span>
+          <strong data-bind="variantSummary">v1</strong>
+        </article>
+      </div>
+
+      <div class="field-grid workspace-notes-grid">
+        <label>
+          <span>Creative brief</span>
+          <textarea id="briefInput" rows="5" placeholder="Innovation-forward open, technical middle, insightful close. Avoid long boring selects."></textarea>
+        </label>
+        <label>
+          <span>Project context</span>
+          <textarea id="contextInput" rows="5" placeholder="Audience, tone, client concerns, what to prove, what to avoid."></textarea>
+        </label>
+        <label>
+          <span>Project notes</span>
+          <textarea id="projectNotesInput" rows="5" placeholder="Anything worth remembering about the cut or the client."></textarea>
+        </label>
+      </div>
+
+      <div class="actions workspace-run-actions">
+        <button id="previewShortlistButton" class="button button-secondary" type="button">Refresh candidates</button>
+        <button id="generateButton" class="button" type="button">Generate XML</button>
+        <button id="rerunSameFilesButton" class="button button-secondary" type="button">Run again</button>
+        <button id="openFolderButton" class="button button-secondary" type="button">Open output folder</button>
+      </div>
+
+      <div class="status-box" data-page-status>
+        <span data-page-message>Load the transcript and Premiere XML to start shaping the lane.</span>
+        <div data-page-error></div>
+        <div data-page-snapshot></div>
+      </div>
+    </section>
+
+    <section class="panel panel-span-3 workspace-column workspace-column-transcript">
+      <div class="section-head">
+        <h2>Transcript browser</h2>
+      </div>
+      <label>
+        <span>Search transcript</span>
+        <input id="transcriptSearchInput" type="text" placeholder="Search text, speaker, or timecode">
+      </label>
+      <div id="transcriptBrowser" class="results"></div>
+    </section>
+
+    <section class="panel panel-span-4 workspace-column workspace-column-lane">
+      <div class="section-head">
+        <h2>Selected lane</h2>
+      </div>
+      <div class="workspace-column-note">This is the current hand-built order. Click any card to focus it.</div>
+      <div id="manualLane" class="results"></div>
+      <div class="actions">
+        <button id="manualXmlButton" class="button button-secondary" type="button">Write XML from lane</button>
+      </div>
+
+      <div class="section-head">
+        <h3>Working order preview</h3>
+      </div>
+      <div id="selectedBites" class="results"></div>
+    </section>
+
+    <section class="panel panel-span-5 workspace-column workspace-column-right">
+      <div class="section-head">
+        <h2>Preview and output</h2>
+      </div>
+      <div id="timelinePreview" class="results"></div>
+
+      <div class="section-head">
+        <h3>Current XML</h3>
+      </div>
+      <div id="results" class="results"></div>
+
+      <div class="section-head">
+        <h3>Generation log</h3>
+      </div>
+      <div id="jobLog" class="results"></div>
+    </section>
+
+    <section class="panel panel-span-6 workspace-lower-panel">
+      <div class="section-head">
+        <h2>Candidate shortlist</h2>
+      </div>
+      <div class="workspace-column-note">Fast pull list from the current brief, chat direction, and locked selections. Source pairs must reference the same master clip for combined generation right now.</div>
+      <div id="shortlistList" class="results"></div>
+    </section>
+
+    <section class="panel panel-span-6 workspace-lower-panel">
+      <div class="section-head">
+        <h2>Ask / refine</h2>
+      </div>
+      <div id="chatLog" class="chat-log">
+        <div class="chat-empty">No chat yet.</div>
+      </div>
+      <label>
+        <span>Ask about the current cut</span>
+        <textarea id="chatInput" rows="4" placeholder="What is the strongest hook here, and what should the lane pivot into next?"></textarea>
+      </label>
+      <div class="actions">
+        <button id="chatButton" class="button" type="button">Ask</button>
+        <button id="clearChatButton" class="button button-link" type="button">Clear</button>
+      </div>
+
+      <div class="section-head">
+        <h3>Accepted edit decisions</h3>
+      </div>
+      <div id="acceptedPlanSummary" class="results"></div>
+    </section>
+  </div>
+{% endblock %}

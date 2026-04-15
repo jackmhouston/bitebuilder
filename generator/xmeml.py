@@ -81,6 +81,11 @@ def generate_sequence(
                 f"Invalid cut: tc_in={cut['tc_in']} tc_out={cut['tc_out']} "
                 f"(duration={duration} frames)"
             )
+        if source.duration > 0 and src_out > source.duration:
+            raise ValueError(
+                f"Invalid cut: tc_out={cut['tc_out']} is beyond source duration "
+                f"({source.duration} frames)"
+            )
         clip_data.append({
             'src_in': src_in,
             'src_out': src_out,
@@ -257,7 +262,7 @@ def _file_ref(source: SourceMetadata) -> str:
     ntsc_str = "TRUE" if source.ntsc else "FALSE"
     return f'''<file id="file-1">
 \t\t\t\t\t\t\t<name>{_xml_escape(source.source_name)}</name>
-\t\t\t\t\t\t\t<pathurl>{source.pathurl}</pathurl>
+\t\t\t\t\t\t\t<pathurl>{_xml_escape(source.pathurl)}</pathurl>
 \t\t\t\t\t\t\t<rate>
 \t\t\t\t\t\t\t\t<timebase>{source.timebase}</timebase>
 \t\t\t\t\t\t\t\t<ntsc>{ntsc_str}</ntsc>

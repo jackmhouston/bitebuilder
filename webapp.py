@@ -7,6 +7,7 @@ import json
 import re
 import subprocess
 import threading
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
@@ -26,7 +27,7 @@ from bitebuilder import (
     run_pipeline,
 )
 from generator.xmeml import generate_sequence
-from generator.timecode import estimate_duration_seconds
+from generator.timecode import estimate_duration_seconds, frames_to_tc, tc_to_frames
 from llm.ollama_client import (
     DEFAULT_HOST,
     DEFAULT_MODEL,
@@ -37,7 +38,7 @@ from llm.ollama_client import (
     resolve_host,
 )
 from llm.prompts import CHAT_SYSTEM_PROMPT, build_chat_prompt
-from parser.transcript import format_for_llm, parse_transcript
+from parser.transcript import TranscriptSegment, format_for_llm, parse_transcript
 from parser.transcript import TranscriptValidationError
 
 
@@ -46,6 +47,35 @@ OUTPUT_ROOT = ROOT / "output" / "web"
 CHAT_TRANSCRIPT_LIMIT = 12000
 JOB_STORE = {}
 JOB_LOCK = threading.Lock()
+SOLAR_DEMO_SOURCES = [
+    {
+        "transcript_path": "/Volumes/Two Jackson/001_Transcode/transcripts/CEO Interview.txt",
+        "xml_path": "/Volumes/Two Jackson/001_Transcode/transcripts/CEO-intv.xml",
+        "label": "CEO Interview",
+    },
+    {
+        "transcript_path": "/Volumes/Two Jackson/001_Transcode/transcripts/Technician Interview.txt",
+        "xml_path": "/Volumes/Two Jackson/001_Transcode/transcripts/Technician Interview.xml",
+        "label": "Technician Interview",
+    },
+]
+SOLAR_DEMO_BRIEF = (
+    "Innovation-forward 5-7 minute sequence built from interview bites. Open with the strongest positive proof point, "
+    "not a negative objection. Emphasize first-in-California / forefront-of-technology positioning, then move into clear "
+    "technician-led proof, then land on an insightful, future-facing resolution. Keep it modular, hooky, and editorially "
+    "sharp. Avoid long boring selects. Do not shorten transcript text in any exported bite references."
+)
+SOLAR_DEMO_CONTEXT = (
+    "This cut should feel like a real editor's working board, not a wizard or chatbot. The story direction already established is: "
+    "1. positive innovation-forward opening 2. credibility / first-mover framing 3. technician-led technical proof in the middle "
+    "4. optimistic close about clean energy, resilience, and future viability. Client/style notes: avoid opening on a negative bite; "
+    "bring out the innovation; first people to do it in California; forefront of technology / space; solar survives / clean energy is not going away; "
+    "keep exact transcript bite text and exact timecodes; favor modular, hooky phrasing over long intact selects."
+)
+SOLAR_DEMO_NOTES = (
+    "Working editorial preference: selection-first browser workspace over unclear TUI; exact transcript fidelity matters; visible selected order matters; "
+    "source A/B/many-source ingest should be simple; Python remains authoritative for parsing, validation, generation, and export; this UI should help shape a cut fast, not explain itself for 10 minutes."
+)
 SEGMENT_INDEX_PATTERN = re.compile(r"\[(\d+)\]")
 TIMECODE_RANGE_PATTERN = re.compile(
     r"(\d{2}:\d{2}:\d{2}:\d{2})\s*-\s*(\d{2}:\d{2}:\d{2}:\d{2})"
@@ -153,8 +183,27 @@ def recoverable_generation_response(payload: dict, result: dict | None = None):
 
 
 def preferred_model(models: list[str]) -> str:
-    if DEFAULT_MODEL in models:
-        return DEFAULT_MODEL
+    preferred_prefixes = (
+        "gemma3:",
+        "llama3.2:3b",
+        "llama3.2:1b",
+        "llama3.2:",
+        "gemma4:e4b",
+        "gemma4:",
+        "llama3:",
+        "qwen",
+        "mistral",
+    )
+    excluded = ("resume-matcher", "embed", "nomic-embed")
+    for prefix in preferred_prefixes:
+        for model in models:
+            lowered = model.lower()
+            if lowered.startswith(prefix) and not any(bad in lowered for bad in excluded):
+                return model
+    for model in models:
+        lowered = model.lower()
+        if not any(bad in lowered for bad in excluded):
+            return model
     return models[0] if models else DEFAULT_MODEL
 
 
@@ -169,6 +218,230 @@ def trim_transcript_for_chat(formatted_transcript: str) -> str:
 
 def resolve_repo_path(relative_path: str) -> Path:
     return (ROOT / relative_path).resolve()
+
+
+def source_pair_error(message: str, *, code: str = "SOURCE-PAIR-INVALID", stage: str = "input", details: dict | None = None) -> BiteBuilderError:
+    raise BiteBuilderError(build_validation_error(
+        code=code,
+        error_type="missing_inputs",
+        message=message,
+        expected_input_format="source_pairs as [{transcript_text, xml_text, transcript_name?, xml_name?}] with transcript/xml provided together.",
+        next_action="Provide matching transcript/XML content for each source slot, or remove incomplete source slots.",
+        recoverable=True,
+        stage=stage,
+        details=details or {},
+    ))
+
+
+def normalize_request_source_pairs(data: dict, *, require_xml: bool = True) -> list[dict]:
+    raw_pairs = data.get("source_pairs")
+    pairs = []
+    if isinstance(raw_pairs, list) and raw_pairs:
+        for index, raw in enumerate(raw_pairs):
+            if not isinstance(raw, dict):
+                source_pair_error(
+                    "Each source pair must be an object.",
+                    code="SOURCE-PAIR-TYPE-INVALID",
+                    details={"index": index, "actual_type": type(raw).__name__},
+                )
+            transcript_text = (raw.get("transcript_text") or "").strip()
+            xml_text = (raw.get("xml_text") or "").strip()
+            if not transcript_text and not xml_text:
+                continue
+            if not transcript_text or not xml_text:
+                if not require_xml and transcript_text and not xml_text and len(raw_pairs) == 1:
+                    pairs.append({
+                        "transcript_text": transcript_text,
+                        "xml_text": "",
+                        "transcript_name": (raw.get("transcript_name") or f"Source {index + 1} transcript").strip(),
+                        "xml_name": (raw.get("xml_name") or "").strip(),
+                    })
+                    continue
+                source_pair_error(
+                    f"Source {index + 1} is incomplete.",
+                    code="SOURCE-PAIR-INCOMPLETE",
+                    details={"index": index, "has_transcript": bool(transcript_text), "has_xml": bool(xml_text)},
+                )
+            pairs.append({
+                "transcript_text": transcript_text,
+                "xml_text": xml_text,
+                "transcript_name": (raw.get("transcript_name") or f"Source {index + 1} transcript").strip(),
+                "xml_name": (raw.get("xml_name") or f"Source {index + 1} xml").strip(),
+            })
+    else:
+        transcript_text = (data.get("transcript_text") or "").strip()
+        xml_text = (data.get("xml_text") or "").strip()
+        if transcript_text or xml_text:
+            if not require_xml and transcript_text and not xml_text:
+                pairs.append({
+                    "transcript_text": transcript_text,
+                    "xml_text": "",
+                    "transcript_name": (data.get("transcript_name") or "Source 1 transcript").strip(),
+                    "xml_name": "",
+                })
+            else:
+                if not transcript_text or not xml_text:
+                    source_pair_error(
+                        "Transcript text and Premiere XML text are required together.",
+                        code="SOURCE-PAIR-INCOMPLETE",
+                        details={"index": 0, "has_transcript": bool(transcript_text), "has_xml": bool(xml_text)},
+                    )
+                pairs.append({
+                    "transcript_text": transcript_text,
+                    "xml_text": xml_text,
+                    "transcript_name": (data.get("transcript_name") or "Source 1 transcript").strip(),
+                    "xml_name": (data.get("xml_name") or "Source 1 xml").strip(),
+                })
+    return pairs
+
+
+def xml_source_start_frame(xml_text: str) -> int:
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return 0
+    clip = root.find('.//clipitem')
+    if clip is None:
+        return 0
+    clip_in = clip.findtext('in') or '0'
+    try:
+        return int(clip_in)
+    except ValueError:
+        return 0
+
+
+def offset_segments(segments: list[TranscriptSegment], frame_offset: int, *, timebase: int) -> list[TranscriptSegment]:
+    if frame_offset <= 0:
+        return segments
+    adjusted = []
+    for segment in segments:
+        start = tc_to_frames(segment.tc_in, timebase) + frame_offset
+        end = tc_to_frames(segment.tc_out, timebase) + frame_offset
+        adjusted.append(TranscriptSegment(
+            tc_in=frames_to_tc(start, timebase),
+            tc_out=frames_to_tc(end, timebase),
+            speaker=segment.speaker,
+            text=segment.text,
+            start_line=segment.start_line,
+            end_line=segment.end_line,
+        ))
+    return adjusted
+
+
+def serialize_segments_as_transcript(segments: list[TranscriptSegment]) -> str:
+    blocks = []
+    for segment in segments:
+        blocks.append(f"{segment.tc_in} - {segment.tc_out}\n{segment.speaker}\n{segment.text}".strip())
+    return "\n\n".join(blocks)
+
+
+def load_request_media(data: dict, *, require_xml: bool = True) -> dict:
+    pairs = normalize_request_source_pairs(data, require_xml=require_xml)
+    if not pairs:
+        return {
+            "pairs": [],
+            "transcript_text": "",
+            "xml_text": "",
+            "source": None,
+            "segments": [],
+            "source_summaries": [],
+        }
+
+    primary = pairs[0]
+    if not primary["xml_text"]:
+        try:
+            segments = parse_transcript(primary["transcript_text"], strict=True)
+        except TranscriptValidationError as exc:
+            raise BiteBuilderError(transcript_timecode_error_payload(exc.errors, "transcript")) from exc
+        return {
+            "pairs": pairs,
+            "transcript_text": primary["transcript_text"],
+            "xml_text": "",
+            "source": None,
+            "segments": segments,
+            "source_summaries": [{
+                "index": 0,
+                "transcript_name": primary["transcript_name"],
+                "xml_name": "",
+                "offset_frames": 0,
+                "pathurl": "",
+                "segment_count": len(segments),
+            }],
+        }
+
+    try:
+        source = parse_premiere_xml_safe(primary["xml_text"])
+    except Exception as exc:
+        if isinstance(exc, BiteBuilderError):
+            raise
+        raise BiteBuilderError(validation_error_payload(
+            code="SOURCE-PAIR-XML-INVALID",
+            error_type="invalid_xml",
+            message="Could not parse Premiere XML.",
+            expected_input_format="Valid Premiere XML export text for each source.",
+            next_action="Upload a fresh Premiere XML export for the failing source.",
+            stage="premiere_xml",
+            details={"cause": str(exc), "source_index": 0},
+        )) from exc
+    try:
+        segments = parse_transcript(primary["transcript_text"], strict=True, timebase=source.timebase, ntsc=source.ntsc)
+    except TranscriptValidationError as exc:
+        raise BiteBuilderError(transcript_timecode_error_payload(exc.errors, "transcript")) from exc
+
+    source_summaries = [{
+        "index": 0,
+        "transcript_name": primary["transcript_name"],
+        "xml_name": primary["xml_name"],
+        "offset_frames": 0,
+        "pathurl": source.pathurl,
+        "segment_count": len(segments),
+    }]
+
+    for index, pair in enumerate(pairs[1:], start=1):
+        try:
+            source_b = parse_premiere_xml_safe(pair["xml_text"])
+        except Exception as exc:
+            if isinstance(exc, BiteBuilderError):
+                raise
+            raise BiteBuilderError(validation_error_payload(
+                code="SOURCE-PAIR-XML-INVALID",
+                error_type="invalid_xml",
+                message="Could not parse Premiere XML.",
+                expected_input_format="Valid Premiere XML export text for each source.",
+                next_action="Upload a fresh Premiere XML export for the failing source.",
+                stage="premiere_xml",
+                details={"cause": str(exc), "source_index": index},
+            )) from exc
+        if source_b.pathurl != source.pathurl:
+            source_pair_error(
+                "Multiple source pairs currently require all XMLs to point at the same underlying source media.",
+                code="SOURCE-PAIR-MULTI-SOURCE-UNSUPPORTED",
+                details={"primary_pathurl": source.pathurl, "secondary_pathurl": source_b.pathurl, "source_index": index},
+            )
+        try:
+            secondary_segments = parse_transcript(pair["transcript_text"], strict=True, timebase=source_b.timebase, ntsc=source_b.ntsc)
+        except TranscriptValidationError as exc:
+            raise BiteBuilderError(transcript_timecode_error_payload(exc.errors, "transcript")) from exc
+        offset_frames = xml_source_start_frame(pair["xml_text"])
+        secondary_segments = offset_segments(secondary_segments, offset_frames, timebase=source.timebase)
+        segments = sorted([*segments, *secondary_segments], key=lambda segment: tc_to_frames(segment.tc_in, source.timebase))
+        source_summaries.append({
+            "index": index,
+            "transcript_name": pair["transcript_name"],
+            "xml_name": pair["xml_name"],
+            "offset_frames": offset_frames,
+            "pathurl": source_b.pathurl,
+            "segment_count": len(secondary_segments),
+        })
+
+    return {
+        "pairs": pairs,
+        "transcript_text": serialize_segments_as_transcript(segments),
+        "xml_text": primary["xml_text"],
+        "source": source,
+        "segments": segments,
+        "source_summaries": source_summaries,
+    }
 
 
 def build_page_context(
@@ -427,6 +700,49 @@ def read_text_if_exists(path: Path) -> str:
     return ""
 
 
+def build_solar_demo_payload() -> dict:
+    source_pairs = []
+    missing = []
+    for source in SOLAR_DEMO_SOURCES:
+        transcript_path = Path(source["transcript_path"])
+        xml_path = Path(source["xml_path"])
+        transcript_text = read_text_if_exists(transcript_path)
+        xml_text = read_text_if_exists(xml_path)
+        if not transcript_text or not xml_text:
+            missing.append({
+                "label": source["label"],
+                "has_transcript": bool(transcript_text),
+                "has_xml": bool(xml_text),
+            })
+            continue
+        source_pairs.append({
+            "transcript_text": transcript_text,
+            "xml_text": xml_text,
+            "transcript_name": transcript_path.name,
+            "xml_name": xml_path.name,
+            "label": source["label"],
+        })
+    if missing:
+        raise BiteBuilderError(build_validation_error(
+            code="SOLAR-DEMO-MISSING",
+            error_type="missing_file",
+            message="Could not load one or more solar demo source files.",
+            expected_input_format="Mounted source files at the known solar demo paths.",
+            next_action="Reconnect the source volume or choose files manually in the workspace.",
+            stage="file",
+            recoverable=True,
+            details={"missing": missing},
+        ))
+    return {
+        "project_title": "Solar innovation story",
+        "variant_name": "solar-v1",
+        "brief": SOLAR_DEMO_BRIEF,
+        "project_context": SOLAR_DEMO_CONTEXT,
+        "project_notes": SOLAR_DEMO_NOTES,
+        "source_pairs": source_pairs,
+    }
+
+
 def apply_variant_name(result: dict, run_dir: Path, variant_name: str) -> None:
     variant = (variant_name or "").strip()
     if not variant:
@@ -503,6 +819,19 @@ def create_app() -> Flask:
     def project_output():
         return project_generate()
 
+    @app.get("/workspace")
+    def workspace():
+        context = build_page_context(
+            page_key="workspace",
+            page_title="Workspace",
+        )
+        context["steps"] = []
+        return render_template("workspace.html", **context)
+
+    @app.get("/project/workspace")
+    def project_workspace():
+        return workspace()
+
     @app.get("/project/export")
     def project_export():
         return render_template(
@@ -537,6 +866,23 @@ def create_app() -> Flask:
             "host": active_host,
         })
 
+    @app.get("/api/demo/solar-workspace")
+    def solar_workspace_demo():
+        if request.remote_addr not in {"127.0.0.1", "::1", None}:
+            return validation_error_response(validation_error_payload(
+                code="SOLAR-DEMO-LOCAL-ONLY",
+                error_type="permission_denied",
+                message="Solar demo preset is only available from localhost.",
+                expected_input_format="Local browser session on the same machine as the Flask app.",
+                next_action="Open the workspace locally or load sources manually.",
+                stage="access",
+            ), 403)
+        try:
+            payload = build_solar_demo_payload()
+        except BiteBuilderError as exc:
+            return validation_error_response(exc.error, 404)
+        return jsonify(payload)
+
     @app.get("/repo-file/<path:repo_path>")
     def repo_file(repo_path: str):
         file_path = resolve_repo_path(repo_path)
@@ -554,21 +900,22 @@ def create_app() -> Flask:
     @app.post("/api/chat")
     def chat():
         data = request.get_json(silent=True) or {}
-        transcript_text = (data.get("transcript_text") or "").strip()
+        try:
+            media = load_request_media(data, require_xml=False)
+        except BiteBuilderError as exc:
+            return validation_error_response(exc.error)
+        transcript_text = media["transcript_text"]
         if not transcript_text:
             return validation_error_response(validation_error_payload(
                 code="CHAT-TRANSCRIPT-MISSING",
                 error_type="missing_transcript_content",
                 message="Transcript text is required for chat.",
-                expected_input_format="Request JSON must include transcript_text.",
+                expected_input_format="Request JSON must include transcript_text or source_pairs.",
                 next_action="Upload transcript text before sending chat request.",
                 stage="transcript",
             ))
 
-        try:
-            segments = parse_transcript(transcript_text, strict=True)
-        except TranscriptValidationError as exc:
-            return validation_error_response(transcript_timecode_error_payload(exc.errors, "transcript"), 400)
+        segments = media["segments"]
         if not segments:
             return validation_error_response(validation_error_payload(
                 code="CHAT-TRANSCRIPT-NO-SEGMENTS",
@@ -647,48 +994,25 @@ def create_app() -> Flask:
     @app.post("/api/parse-transcript")
     def parse_transcript_api():
         data = request.get_json(silent=True) or {}
-        transcript_text = (data.get("transcript_text") or "").strip()
-        xml_text = (data.get("xml_text") or "").strip()
-        if not transcript_text:
+        try:
+            media = load_request_media(data)
+        except BiteBuilderError as exc:
+            return validation_error_response(exc.error)
+        if not media["transcript_text"]:
             return validation_error_response(validation_error_payload(
                 code="PARSE-TRANSCRIPT-MISSING",
                 error_type="missing_transcript_content",
                 message="Transcript text is required.",
-                expected_input_format="Request JSON with transcript_text key.",
+                expected_input_format="Request JSON with transcript_text or source_pairs.",
                 next_action="Provide transcript text.",
                 stage="transcript",
             ))
-
-        timebase = 30
-        ntsc = False
-        if xml_text:
-            try:
-                source = parse_premiere_xml_safe(xml_text)
-                timebase = _source_value(source, "timebase", timebase)
-                ntsc = _source_value(source, "ntsc", ntsc)
-            except Exception as exc:
-                if isinstance(exc, BiteBuilderError):
-                    return validation_error_response(exc.error, 400)
-                return validation_error_response(validation_error_payload(
-                    code="PARSE-XML-INVALID",
-                    error_type="invalid_xml",
-                    message="Could not parse Premiere XML.",
-                    expected_input_format="Raw Premiere XML export text.",
-                    next_action="Upload a full XML export from Premiere.",
-                    stage="premiere_xml",
-                    details={"cause": str(exc)},
-                ))
-        try:
-            segments = parse_transcript(
-                transcript_text,
-                strict=True,
-                timebase=timebase,
-                ntsc=ntsc,
-            )
-        except TranscriptValidationError as exc:
-            return validation_error_response(transcript_timecode_error_payload(exc.errors, "transcript"), 400)
+        source = media["source"]
+        segments = media["segments"]
         return jsonify({
             "segment_count": len(segments),
+            "source_count": len(media["source_summaries"]),
+            "source_summaries": media["source_summaries"],
             "segments": [
                 {
                     "segment_index": index,
@@ -699,8 +1023,8 @@ def create_app() -> Flask:
                     "duration_seconds": estimate_duration_seconds(
                         segment.tc_in,
                         segment.tc_out,
-                        timebase,
-                        ntsc,
+                        source.timebase,
+                        source.ntsc,
                     ),
                 }
                 for index, segment in enumerate(segments)
@@ -710,19 +1034,21 @@ def create_app() -> Flask:
     @app.post("/api/preview-shortlist")
     def preview_shortlist():
         data = request.get_json(silent=True) or {}
-        transcript_text = (data.get("transcript_text") or "").strip()
-        xml_text = (data.get("xml_text") or "").strip()
         brief = (data.get("brief") or "").strip()
         project_context = (data.get("project_context") or "").strip()
         messages = data.get("messages") or []
         accepted_plan = data.get("accepted_plan") or {}
         speaker_balance = (data.get("speaker_balance") or "balanced").strip()
-        if not transcript_text or not xml_text:
+        try:
+            media = load_request_media(data)
+        except BiteBuilderError as exc:
+            return validation_error_response(exc.error)
+        if not media["transcript_text"] or not media["xml_text"]:
             return validation_error_response(validation_error_payload(
                 code="PREVIEW-INPUT-MISSING",
                 error_type="missing_inputs",
                 message="Transcript text and Premiere XML text are required.",
-                expected_input_format="Both transcript_text and xml_text.",
+                expected_input_format="Both transcript_text/xml_text or complete source_pairs.",
                 next_action="Fill both required fields before previewing candidates.",
                 stage="input",
             ))
@@ -730,31 +1056,8 @@ def create_app() -> Flask:
             validated_brief = validate_brief(brief)
         except BiteBuilderError as exc:
             return validation_error_response(exc.error)
-        try:
-            source = parse_premiere_xml_safe(xml_text)
-        except Exception as exc:
-            if isinstance(exc, BiteBuilderError):
-                return validation_error_response(exc.error, 400)
-            return validation_error_response(validation_error_payload(
-                code="PREVIEW-XML-INVALID",
-                error_type="invalid_xml",
-                message="Could not parse Premiere XML.",
-                expected_input_format="Valid Premiere XML export text.",
-                next_action="Upload a fresh Premiere XML export.",
-                stage="premiere_xml",
-                details={"cause": str(exc)},
-            ))
-        try:
-            timebase = _source_value(source, "timebase", 30)
-            ntsc = _source_value(source, "ntsc", False)
-            segments = parse_transcript(
-                transcript_text,
-                strict=True,
-                timebase=timebase,
-                ntsc=ntsc,
-            )
-        except TranscriptValidationError as exc:
-            return validation_error_response(transcript_timecode_error_payload(exc.errors, "transcript"), 400)
+        source = media["source"]
+        segments = media["segments"]
         if not segments:
             return validation_error_response(validation_error_payload(
                 code="PREVIEW-TRANSCRIPT-NO-SEGMENTS",
@@ -783,10 +1086,14 @@ def create_app() -> Flask:
     @app.post("/api/render-xml")
     def render_xml():
         data = request.get_json(silent=True) or {}
-        xml_text = (data.get("xml_text") or "").strip()
-        transcript_text = (data.get("transcript_text") or "").strip()
         option_name = (data.get("name") or "Manual Edit").strip()
         cuts = data.get("cuts") or []
+        try:
+            media = load_request_media(data)
+        except BiteBuilderError as exc:
+            return validation_error_response(exc.error)
+        xml_text = media["xml_text"]
+        transcript_text = media["transcript_text"]
         if not xml_text or not cuts:
             return validation_error_response(validation_error_payload(
                 code="MANUAL-INPUT-MISSING",
@@ -921,8 +1228,6 @@ def create_app() -> Flask:
     @app.post("/api/generate")
     def generate():
         data = request.get_json(silent=True) or {}
-        transcript_text = (data.get("transcript_text") or "").strip()
-        xml_text = (data.get("xml_text") or "").strip()
         brief = (data.get("brief") or "").strip()
         project_context = (data.get("project_context") or "").strip()
         model = (data.get("model") or DEFAULT_MODEL).strip()
@@ -953,6 +1258,12 @@ def create_app() -> Flask:
         locked_segment_indexes = normalize_segment_indexes(data.get("locked_segment_indexes"))
         forced_open_segment_index = normalize_segment_index(data.get("forced_open_segment_index"))
         speaker_balance = (data.get("speaker_balance") or "balanced").strip()
+        try:
+            media = load_request_media(data)
+        except BiteBuilderError as exc:
+            return validation_error_response(exc.error)
+        transcript_text = media["transcript_text"]
+        xml_text = media["xml_text"]
 
         if not transcript_text:
             return validation_error_response(validation_error_payload(
@@ -1024,8 +1335,6 @@ def create_app() -> Flask:
     @app.post("/api/generate-jobs")
     def generate_jobs():
         data = request.get_json(silent=True) or {}
-        transcript_text = (data.get("transcript_text") or "").strip()
-        xml_text = (data.get("xml_text") or "").strip()
         brief = (data.get("brief") or "").strip()
         project_context = (data.get("project_context") or "").strip()
         model = (data.get("model") or DEFAULT_MODEL).strip()
@@ -1056,6 +1365,12 @@ def create_app() -> Flask:
         locked_segment_indexes = normalize_segment_indexes(data.get("locked_segment_indexes"))
         forced_open_segment_index = normalize_segment_index(data.get("forced_open_segment_index"))
         speaker_balance = (data.get("speaker_balance") or "balanced").strip()
+        try:
+            media = load_request_media(data)
+        except BiteBuilderError as exc:
+            return validation_error_response(exc.error)
+        transcript_text = media["transcript_text"]
+        xml_text = media["xml_text"]
 
         if not transcript_text or not xml_text or not brief:
             return validation_error_response(validation_error_payload(

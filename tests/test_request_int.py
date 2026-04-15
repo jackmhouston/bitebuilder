@@ -1,5 +1,6 @@
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import bitebuilder
 import webapp
@@ -37,6 +38,51 @@ Speaker 1
 Hello there.
 """
 
+XML_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
+<xmeml version="4">
+  <sequence>
+    <name>{name}</name>
+    <rate><timebase>24</timebase><ntsc>TRUE</ntsc></rate>
+    <media>
+      <video>
+        <track>
+          <clipitem>
+            <name>{source_name}</name>
+            <start>0</start>
+            <end>48</end>
+            <in>{clip_in}</in>
+            <out>{clip_out}</out>
+            <file>
+              <name>{source_name}</name>
+              <pathurl>{pathurl}</pathurl>
+              <rate><timebase>24</timebase><ntsc>TRUE</ntsc></rate>
+              <duration>240</duration>
+              <media>
+                <video><samplecharacteristics><width>1920</width><height>1080</height></samplecharacteristics></video>
+                <audio>
+                  <channelcount>2</channelcount>
+                  <samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics>
+                </audio>
+              </media>
+            </file>
+          </clipitem>
+        </track>
+      </video>
+    </media>
+  </sequence>
+</xmeml>
+"""
+
+
+def xml_fixture(*, clip_in=0, clip_out=48, pathurl='file:///Volumes/Test/clip.mov', name='Interview', source_name='clip.mov'):
+    return XML_TEMPLATE.format(
+        clip_in=clip_in,
+        clip_out=clip_out,
+        pathurl=pathurl,
+        name=name,
+        source_name=source_name,
+    )
+
 
 class RequestIntFlaskTests(unittest.TestCase):
     def setUp(self):
@@ -73,6 +119,113 @@ class RequestIntFlaskTests(unittest.TestCase):
             'timeout': 'later',
         })
         self.assert_invalid_numeric_response(response, 'CHAT-TIMEOUT-INVALID', 'timeout')
+
+    def test_workspace_route_renders(self):
+        response = self.client.get('/workspace')
+        self.assertEqual(response.status_code, 200)
+        page = response.get_data(as_text=True)
+        self.assertIn('Selection-first edit board', page)
+        self.assertIn('Transcript browser', page)
+        self.assertIn('Selected lane', page)
+        self.assertIn('Load solar demo', page)
+
+    def test_solar_demo_endpoint_returns_prefill_payload(self):
+        payload = {
+            'project_title': 'Solar innovation story',
+            'variant_name': 'solar-v1',
+            'brief': 'brief',
+            'project_context': 'context',
+            'project_notes': 'notes',
+            'source_pairs': [{'transcript_text': 'a', 'xml_text': 'b', 'transcript_name': 'A.txt', 'xml_name': 'A.xml'}],
+        }
+        with patch('webapp.build_solar_demo_payload', return_value=payload):
+            response = self.client.get('/api/demo/solar-workspace')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), payload)
+
+    def test_solar_demo_endpoint_returns_404_when_demo_files_missing(self):
+        error = bitebuilder.build_validation_error(
+            code='SOLAR-DEMO-MISSING',
+            error_type='missing_file',
+            message='missing',
+            expected_input_format='demo files',
+            next_action='choose files manually',
+            stage='file',
+            recoverable=True,
+        )
+        with patch('webapp.build_solar_demo_payload', side_effect=bitebuilder.BiteBuilderError(error)):
+            response = self.client.get('/api/demo/solar-workspace')
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.get_json()['error']['code'], 'SOLAR-DEMO-MISSING')
+
+    def test_solar_demo_endpoint_is_localhost_only(self):
+        with self.client.application.test_request_context():
+            pass
+        with patch('webapp.build_solar_demo_payload', return_value={'source_pairs': []}):
+            response = self.client.get('/api/demo/solar-workspace', environ_overrides={'REMOTE_ADDR': '10.0.0.5'})
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.get_json()['error']['code'], 'SOLAR-DEMO-LOCAL-ONLY')
+
+    def test_parse_transcript_combines_source_pairs_with_secondary_offset(self):
+        response = self.client.post('/api/parse-transcript', json={
+            'source_pairs': [
+                {
+                    'transcript_text': VALID_TRANSCRIPT,
+                    'xml_text': xml_fixture(name='CEO Interview', clip_in=0, clip_out=48),
+                },
+                {
+                    'transcript_text': """00:00:00:00 - 00:00:02:00
+Speaker 2
+Secondary hello.
+""",
+                    'xml_text': xml_fixture(name='Technician Interview', clip_in=48, clip_out=96),
+                },
+            ],
+        })
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload['segment_count'], 2)
+        self.assertEqual(payload['segments'][0]['text'], 'Hello there.')
+        self.assertEqual(payload['segments'][1]['text'], 'Secondary hello.')
+        self.assertEqual(payload['segments'][1]['tc_in'], '00:00:02:00')
+
+    def test_generate_uses_combined_source_pairs_payload(self):
+        fake_result = {
+            'output_files': [],
+            'response': {'options': []},
+            'debug_artifacts': {'candidate_shortlist': []},
+            'debug_files': {},
+            'segments': [],
+            'segment_count': 2,
+            'run_metadata': {},
+            'source': bitebuilder.parse_premiere_xml_safe(xml_fixture()),
+            'thinking_mode': 'auto',
+            'target_duration_range': [30, 60],
+            'validation_errors': [],
+        }
+        with patch('webapp.run_pipeline', return_value=fake_result) as run_pipeline:
+            response = self.client.post('/api/generate', json={
+                'brief': 'Innovation-forward open, technical middle, optimistic close.',
+                'model': 'gemma3:4b',
+                'source_pairs': [
+                    {
+                        'transcript_text': VALID_TRANSCRIPT,
+                        'xml_text': xml_fixture(name='CEO Interview', clip_in=0, clip_out=48),
+                    },
+                    {
+                        'transcript_text': """00:00:00:00 - 00:00:02:00
+Speaker 2
+Secondary hello.
+""",
+                        'xml_text': xml_fixture(name='Technician Interview', clip_in=48, clip_out=96),
+                    },
+                ],
+            })
+        self.assertEqual(response.status_code, 200)
+        kwargs = run_pipeline.call_args.kwargs
+        self.assertIn('Hello there.', kwargs['transcript_text'])
+        self.assertIn('Secondary hello.', kwargs['transcript_text'])
+        self.assertIn('00:00:02:00', kwargs['transcript_text'])
 
 if __name__ == '__main__':
     unittest.main()

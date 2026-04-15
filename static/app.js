@@ -13,10 +13,46 @@ function createEmptyPlan() {
   };
 }
 
+function createSourcePair(seed = {}) {
+  return {
+    id: seed.id || `source-${Math.random().toString(36).slice(2, 10)}`,
+    transcriptText: seed.transcriptText || "",
+    xmlText: seed.xmlText || "",
+    transcriptName: seed.transcriptName || "",
+    xmlName: seed.xmlName || "",
+  };
+}
+
+function normalizeSourcePairs(sourcePairs = [], fallback = {}) {
+  const rawPairs = Array.isArray(sourcePairs) ? sourcePairs : [];
+  const normalized = rawPairs.map((pair) => createSourcePair(pair));
+  if (!normalized.length && (fallback.transcriptText || fallback.xmlText || fallback.transcriptName || fallback.xmlName)) {
+    normalized.push(createSourcePair({
+      transcriptText: fallback.transcriptText,
+      xmlText: fallback.xmlText,
+      transcriptName: fallback.transcriptName,
+      xmlName: fallback.xmlName,
+    }));
+  }
+  return normalized.length ? normalized : [createSourcePair()];
+}
+
+function syncLegacyFieldsFromSources(pairs) {
+  const firstComplete = (pairs || []).find((pair) => pair.transcriptText && pair.xmlText) || (pairs || [])[0] || createSourcePair();
+  const completeCount = (pairs || []).filter((pair) => pair.transcriptText && pair.xmlText).length;
+  return {
+    transcriptText: firstComplete.transcriptText || "",
+    xmlText: firstComplete.xmlText || "",
+    transcriptName: completeCount > 1 ? `${completeCount} sources loaded` : (firstComplete.transcriptName || ""),
+    xmlName: completeCount > 1 ? `${completeCount} XMLs loaded` : (firstComplete.xmlName || ""),
+  };
+}
+
 function createDefaultState() {
   return {
     projectTitle: "Untitled project",
     projectNotes: "",
+    sourcePairs: [createSourcePair()],
     transcriptText: "",
     xmlText: "",
     transcriptName: "",
@@ -38,6 +74,7 @@ function createDefaultState() {
     lockedSegmentIndexes: [],
     forcedOpenSegmentIndex: null,
     manualAssemblyIndexes: [],
+    focusedSegmentIndex: null,
     suggestedPlan: createEmptyPlan(),
     acceptedPlan: createEmptyPlan(),
     runHistory: [],
@@ -57,9 +94,12 @@ function loadState() {
     const saved = JSON.parse(window.localStorage.getItem(STORAGE_KEY) || "{}");
     const savedRunHistory = Array.isArray(saved.runHistory) ? saved.runHistory : [];
     const savedLastGeneration = saved.lastGeneration || savedRunHistory[0] || null;
+    const sourcePairs = normalizeSourcePairs(saved.sourcePairs, saved);
     return {
       ...createDefaultState(),
       ...saved,
+      ...syncLegacyFieldsFromSources(sourcePairs),
+      sourcePairs,
       messages: Array.isArray(saved.messages) ? saved.messages : [],
       transcriptSegments: Array.isArray(saved.transcriptSegments) ? saved.transcriptSegments : [],
       candidateShortlist: Array.isArray(saved.candidateShortlist) ? saved.candidateShortlist : [],
@@ -101,7 +141,10 @@ const variantNameInput = document.getElementById("variantNameInput");
 const speakerBalanceSelect = document.getElementById("speakerBalanceSelect");
 const transcriptFileInput = document.getElementById("transcriptFile");
 const xmlFileInput = document.getElementById("xmlFile");
+const sourceList = document.getElementById("sourceList");
+const addSourceButton = document.getElementById("addSourceButton");
 const projectFileInput = document.getElementById("projectFileInput");
+const loadSolarDemoButton = document.getElementById("loadSolarDemoButton");
 const saveProjectButton = document.getElementById("saveProjectButton");
 const transcriptPreview = document.getElementById("transcriptPreview");
 const xmlPreview = document.getElementById("xmlPreview");
@@ -146,6 +189,9 @@ function commitState(patch, { clearGeneration = false, clearError = false } = {}
     ...normalizedPatch,
     messages: Array.isArray(normalizedPatch.messages) ? normalizedPatch.messages : state.messages,
   };
+  if (!normalizedPatch.sourcePairs && Array.isArray(state.sourcePairs)) {
+    Object.assign(state, syncLegacyFieldsFromSources(state.sourcePairs));
+  }
 
   if (clearGeneration) {
     state.lastGeneration = null;
@@ -372,6 +418,10 @@ function planHasContent(plan) {
 
 function normalizeStatePatch(patch = {}) {
   const next = { ...patch };
+  if ("sourcePairs" in next) {
+    next.sourcePairs = normalizeSourcePairs(next.sourcePairs, next);
+    Object.assign(next, syncLegacyFieldsFromSources(next.sourcePairs));
+  }
   if ("pinnedSegmentIndexes" in next) {
     next.pinnedSegmentIndexes = uniqueNumbers(next.pinnedSegmentIndexes);
   }
@@ -942,7 +992,7 @@ function pushRunHistory(runPayload) {
 }
 
 async function refreshTranscriptSegments() {
-  if (!state.transcriptText) {
+  if (!isFilesReady()) {
     commitState({ transcriptSegments: [], candidateShortlist: [], manualAssemblyIndexes: [] }, { clearGeneration: true });
     return;
   }
@@ -951,8 +1001,14 @@ async function refreshTranscriptSegments() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        transcript_text: state.transcriptText,
-        xml_text: state.xmlText,
+        source_pairs: normalizeSourcePairs(state.sourcePairs)
+          .filter((pair) => pair.transcriptText || pair.xmlText)
+          .map((pair) => ({
+            transcript_text: pair.transcriptText,
+            xml_text: pair.xmlText,
+            transcript_name: pair.transcriptName,
+            xml_name: pair.xmlName,
+          })),
       }),
     });
     const payload = await response.json();
@@ -1015,14 +1071,20 @@ function toggleIndex(listKey, index) {
 
 function addManualSegment(index) {
   if ((state.manualAssemblyIndexes || []).includes(index)) {
+    setFocusedSegment(index);
     return;
   }
-  commitState({ manualAssemblyIndexes: [...state.manualAssemblyIndexes, index] }, { clearGeneration: false });
+  commitState({
+    manualAssemblyIndexes: [...state.manualAssemblyIndexes, index],
+    focusedSegmentIndex: index,
+  }, { clearGeneration: false });
 }
 
 function removeManualSegment(index) {
+  const nextIndexes = state.manualAssemblyIndexes.filter((value) => value !== index);
   commitState({
-    manualAssemblyIndexes: state.manualAssemblyIndexes.filter((value) => value !== index),
+    manualAssemblyIndexes: nextIndexes,
+    focusedSegmentIndex: state.focusedSegmentIndex === index ? (nextIndexes.at(-1) ?? null) : state.focusedSegmentIndex,
   }, { clearGeneration: false });
 }
 
@@ -1041,6 +1103,22 @@ function moveManualSegment(index, delta) {
   commitState({ manualAssemblyIndexes: items }, { clearGeneration: false });
 }
 
+function setFocusedSegment(index) {
+  if (!Number.isInteger(index)) {
+    return;
+  }
+  commitState({ focusedSegmentIndex: index }, { clearGeneration: false });
+}
+
+function isFocusedSegment(index) {
+  return Number.isInteger(state.focusedSegmentIndex) && Number(state.focusedSegmentIndex) === Number(index);
+}
+
+function focusedLaneLabel(index) {
+  const lanePosition = (state.manualAssemblyIndexes || []).indexOf(index);
+  return lanePosition >= 0 ? `Selected #${lanePosition + 1}` : "Not in lane";
+}
+
 function updateBindings(key, value) {
   document.querySelectorAll(`[data-bind="${key}"]`).forEach((node) => {
     node.textContent = value;
@@ -1057,6 +1135,121 @@ function syncInputValue(element, value) {
   }
 }
 
+function updateSourcePair(sourceId, patch) {
+  const nextPairs = normalizeSourcePairs(state.sourcePairs).map((pair) => (
+    pair.id === sourceId ? { ...pair, ...patch } : pair
+  ));
+  commitState({
+    sourcePairs: nextPairs,
+    messages: [],
+    suggestedPlan: createEmptyPlan(),
+    acceptedPlan: createEmptyPlan(),
+    candidateShortlist: [],
+    manualAssemblyIndexes: [],
+    pinnedSegmentIndexes: [],
+    bannedSegmentIndexes: [],
+    requiredSegmentIndexes: [],
+    lockedSegmentIndexes: [],
+    forcedOpenSegmentIndex: null,
+    focusedSegmentIndex: null,
+    lastError: null,
+  }, { clearGeneration: true, clearError: true });
+}
+
+function addSourcePair() {
+  commitState({ sourcePairs: [...normalizeSourcePairs(state.sourcePairs), createSourcePair()] }, { clearGeneration: false });
+}
+
+function removeSourcePair(sourceId) {
+  const remaining = normalizeSourcePairs(state.sourcePairs).filter((pair) => pair.id !== sourceId);
+  commitState({ sourcePairs: remaining.length ? remaining : [createSourcePair()] }, { clearGeneration: true, clearError: true });
+  void refreshTranscriptSegments();
+}
+
+function renderSourceList() {
+  if (!sourceList) {
+    return;
+  }
+  const pairs = normalizeSourcePairs(state.sourcePairs);
+  sourceList.innerHTML = pairs.map((pair, index) => {
+    const loadedTranscript = pair.transcriptName || "No transcript loaded";
+    const loadedXml = pair.xmlName || "No XML loaded";
+    return `
+      <article class="result-card source-card">
+        <div class="result-card-head">
+          <strong>Source ${index + 1}</strong>
+          <div class="result-links">
+            <button class="button button-secondary" type="button" data-remove-source="${pair.id}" ${pairs.length === 1 ? "disabled" : ""}>Remove</button>
+          </div>
+        </div>
+        <label>
+          <span>Transcript</span>
+          <input type="file" accept=".txt,.md,.text" data-source-file="transcript" data-source-id="${pair.id}">
+          <div class="result-meta">${escapeHtml(loadedTranscript)}</div>
+        </label>
+        <label>
+          <span>Premiere XML</span>
+          <input type="file" accept=".xml,.fcpxml,.txt" data-source-file="xml" data-source-id="${pair.id}">
+          <div class="result-meta">${escapeHtml(loadedXml)}</div>
+        </label>
+      </article>
+    `;
+  }).join("");
+}
+
+async function loadSolarDemoWorkspace() {
+  if (!loadSolarDemoButton) {
+    return;
+  }
+  loadSolarDemoButton.disabled = true;
+  setStatus("Loading solar demo sources...");
+  try {
+    const response = await fetch("/api/demo/solar-workspace");
+    const payload = await response.json();
+    if (!response.ok) {
+      throw payload;
+    }
+    commitState({
+      projectTitle: payload.project_title || "Solar innovation story",
+      variantName: payload.variant_name || "solar-v1",
+      brief: payload.brief || "",
+      projectContext: payload.project_context || "",
+      projectNotes: payload.project_notes || "",
+      sourcePairs: (payload.source_pairs || []).map((pair) => createSourcePair({
+        transcriptText: pair.transcript_text,
+        xmlText: pair.xml_text,
+        transcriptName: pair.transcript_name,
+        xmlName: pair.xml_name,
+      })),
+      messages: [],
+      suggestedPlan: createEmptyPlan(),
+      acceptedPlan: createEmptyPlan(),
+      candidateShortlist: [],
+      manualAssemblyIndexes: [],
+      pinnedSegmentIndexes: [],
+      bannedSegmentIndexes: [],
+      requiredSegmentIndexes: [],
+      lockedSegmentIndexes: [],
+      forcedOpenSegmentIndex: null,
+      focusedSegmentIndex: null,
+      lastError: null,
+    }, { clearGeneration: true, clearError: true });
+    await refreshTranscriptSegments();
+    setStatus("Solar demo sources loaded.");
+  } catch (error) {
+    const details = error.error || error;
+    showError({
+      code: details.code || "SOLAR-DEMO-FAILED",
+      message: details.message || "Could not load solar demo sources.",
+      stage: details.stage || "file",
+      expected_input_format: details.expected_input_format || "Mounted demo files or manual file selection.",
+      next_action: details.next_action || "Reconnect the source volume or choose files manually.",
+    }, "workspace");
+  } finally {
+    loadSolarDemoButton.disabled = false;
+  }
+}
+
 function setLinkEnabled(element, enabled) {
   if (!element) {
     return;
@@ -1066,7 +1259,7 @@ function setLinkEnabled(element, enabled) {
 }
 
 function isFilesReady() {
-  return Boolean(state.transcriptText && state.xmlText);
+  return normalizeSourcePairs(state.sourcePairs).some((pair) => pair.transcriptText && pair.xmlText);
 }
 
 function isBriefReady() {
@@ -1156,6 +1349,17 @@ function renderPageStatus() {
         setStatus("No run yet.");
       } else {
         setStatus(`${getActiveGeneration().files.length} file(s) ready.`);
+      }
+      break;
+    case "workspace":
+      if (state.currentJob) {
+        setStatus(state.currentJobLogs.at(-1)?.message || "Generating...");
+      } else if (!isFilesReady()) {
+        setStatus("Load the transcript and Premiere XML.");
+      } else if (!isBriefReady()) {
+        setStatus("Write the brief, then start pulling bites into the lane.");
+      } else {
+        setStatus("Workspace ready. Search, select, reorder, then generate.");
       }
       break;
     default:
@@ -1446,12 +1650,14 @@ function renderTranscriptBrowser() {
     const isRequired = state.requiredSegmentIndexes.includes(index);
     const isManual = state.manualAssemblyIndexes.includes(index);
     const isForcedOpen = Number.isInteger(state.forcedOpenSegmentIndex) && state.forcedOpenSegmentIndex === index;
-    const tone = segmentCardTone(index);
+    const isFocused = isFocusedSegment(index);
+    const tone = `${segmentCardTone(index)}${isFocused ? " is-focused" : ""}`.trim();
+    const laneMeta = isManual ? `<span class="selection-pill">${escapeHtml(focusedLaneLabel(index))}</span>` : "";
     return `
-      <article class="result-card transcript-card ${tone}">
+      <article class="result-card transcript-card ${tone}" data-focus-segment="${index}">
         <div class="result-card-head">
           <strong>[${index}] ${escapeHtml(segment.tc_in)} - ${escapeHtml(segment.tc_out)}</strong>
-          <div class="segment-badges">${renderStateBadges(index)}</div>
+          <div class="segment-badges">${laneMeta}${renderStateBadges(index)}</div>
         </div>
         <div class="result-meta">${escapeHtml(segment.speaker)} | ${formatSeconds(segment.duration_seconds)}</div>
         <div class="result-meta">${escapeHtml(segment.text)}</div>
@@ -1483,11 +1689,13 @@ function renderManualLane() {
     if (!segment) {
       return "";
     }
+    const lanePosition = state.manualAssemblyIndexes.indexOf(index);
+    const focusedClass = isFocusedSegment(index) ? " is-focused" : "";
     return `
-      <article class="result-card is-kept">
+      <article class="result-card is-kept${focusedClass}" data-focus-segment="${index}">
         <div class="result-card-head">
-          <strong>${escapeHtml(segment.tc_in)} - ${escapeHtml(segment.tc_out)}</strong>
-          <div class="segment-badges">${renderStateBadges(index)}</div>
+          <strong>${lanePosition + 1}. ${escapeHtml(segment.tc_in)} - ${escapeHtml(segment.tc_out)}</strong>
+          <div class="segment-badges"><span class="selection-pill">Selected #${lanePosition + 1}</span>${renderStateBadges(index)}</div>
         </div>
         <div class="result-meta">${escapeHtml(segment.speaker)} | ${formatSeconds(segment.duration_seconds)}</div>
         <div class="result-meta">${escapeHtml(segment.text)}</div>
@@ -1513,23 +1721,30 @@ function renderShortlist() {
     shortlistList.innerHTML = '<div class="result-card"><strong>No shortlist preview yet.</strong></div>';
     return;
   }
-  shortlistList.innerHTML = candidates.map((candidate) => `
-    <article class="result-card ${segmentCardTone(Number(candidate.segment_index))}">
+  shortlistList.innerHTML = candidates.map((candidate) => {
+    const index = Number(candidate.segment_index);
+    const focusedClass = isFocusedSegment(index) ? " is-focused" : "";
+    const laneMeta = state.manualAssemblyIndexes.includes(index)
+      ? `<span class="selection-pill">${escapeHtml(focusedLaneLabel(index))}</span>`
+      : "";
+    return `
+    <article class="result-card ${segmentCardTone(index)}${focusedClass}" data-focus-segment="${index}">
       <div class="result-card-head">
         <strong>[${candidate.segment_index}] ${escapeHtml(candidate.tc_in)} - ${escapeHtml(candidate.tc_out)}</strong>
-        <div class="segment-badges">${renderStateBadges(Number(candidate.segment_index))}</div>
+        <div class="segment-badges">${laneMeta}${renderStateBadges(index)}</div>
       </div>
       <div class="result-meta">${escapeHtml(candidate.speaker)} | ${formatSeconds(candidate.duration_seconds)} | score ${Number(candidate.score || 0).toFixed(1)}</div>
       <div class="result-meta">${escapeHtml((candidate.roles || []).join(", "))}</div>
       <div class="result-meta">${escapeHtml((candidate.reasons || []).join(", "))}</div>
       <div class="result-meta">${escapeHtml(candidate.text || "")}</div>
       <div class="result-links">
-        <button class="button button-secondary" type="button" data-segment-action="pin" data-segment-index="${candidate.segment_index}">${state.pinnedSegmentIndexes.includes(Number(candidate.segment_index)) ? "Unkeep" : "Keep"}</button>
-        <button class="button button-secondary" type="button" data-segment-action="open" data-segment-index="${candidate.segment_index}">${state.forcedOpenSegmentIndex === Number(candidate.segment_index) ? "Clear first" : "Use first"}</button>
-        <button class="button button-secondary" type="button" data-segment-action="add" data-segment-index="${candidate.segment_index}">${state.manualAssemblyIndexes.includes(Number(candidate.segment_index)) ? "In lane" : "Add to lane"}</button>
+        <button class="button button-secondary" type="button" data-segment-action="pin" data-segment-index="${candidate.segment_index}">${state.pinnedSegmentIndexes.includes(index) ? "Unkeep" : "Keep"}</button>
+        <button class="button button-secondary" type="button" data-segment-action="open" data-segment-index="${candidate.segment_index}">${state.forcedOpenSegmentIndex === index ? "Clear first" : "Use first"}</button>
+        <button class="button button-secondary" type="button" data-segment-action="add" data-segment-index="${candidate.segment_index}">${state.manualAssemblyIndexes.includes(index) ? "In lane" : "Add to lane"}</button>
       </div>
     </article>
-  `).join("");
+  `;
+  }).join("");
 }
 
 function renderSelectedBites() {
@@ -1552,16 +1767,20 @@ function renderSelectedBites() {
     <article class="result-card">
       <strong>${escapeHtml(title)}</strong>
       <div class="result-meta">${escapeHtml(meta)}</div>
-      ${cuts.map((cut, position) => `
-        <div class="cut-row">
+      ${cuts.map((cut, position) => {
+        const segmentIndex = Number(cut.segment_index);
+        const focusClass = isFocusedSegment(segmentIndex) ? " is-focused" : "";
+        return `
+        <div class="cut-row${focusClass}" data-focus-segment="${segmentIndex}">
           <div class="timeline-item-head">
             <strong>${position + 1}. ${escapeHtml(cut.tc_in)} - ${escapeHtml(cut.tc_out)}</strong>
             <span>${escapeHtml(cut.speaker || "")} | ${escapeHtml(cut.purpose || "") || "Cut"}</span>
           </div>
-          <div class="cut-badges">${renderStateBadges(Number(cut.segment_index))}</div>
+          <div class="cut-badges"><span class="selection-pill">Selected #${position + 1}</span>${renderStateBadges(segmentIndex)}</div>
           <div>${escapeHtml(cut.text || cut.dialogue_summary || "")}</div>
         </div>
-      `).join("")}
+      `;
+      }).join("")}
     </article>
   `;
 }
@@ -1675,6 +1894,7 @@ function renderAll() {
   renderBrief();
   renderChat();
   renderGenerate();
+  renderSourceList();
   renderResults(getActiveGeneration());
   renderTranscriptBrowser();
   renderManualLane();
@@ -1692,7 +1912,9 @@ async function fetchModels() {
     modelInventory = Array.isArray(payload.models) ? payload.models : [];
 
     const patch = {};
-    if (!state.model && modelInventory.length) {
+    const currentModel = String(state.model || "").toLowerCase();
+    const shouldReplaceModel = !state.model || ["resume-matcher", "embed", "nomic-embed"].some((bad) => currentModel.includes(bad));
+    if (shouldReplaceModel && modelInventory.length) {
       patch.model = payload.default_model || "";
     }
     if (!state.thinkingMode) {
@@ -1717,16 +1939,31 @@ async function fetchModels() {
   }
 }
 
-async function loadFile(file, kind) {
+async function loadFile(file, kind, sourceId = null) {
   if (!file) {
     return;
   }
 
   const text = await file.text();
+  if (sourceId) {
+    if (kind === "transcript") {
+      updateSourcePair(sourceId, {
+        transcriptText: text,
+        transcriptName: file.name,
+      });
+    } else {
+      updateSourcePair(sourceId, {
+        xmlText: text,
+        xmlName: file.name,
+      });
+    }
+    await refreshTranscriptSegments();
+    return;
+  }
+
   if (kind === "transcript") {
     commitState({
-      transcriptText: text,
-      transcriptName: file.name,
+      sourcePairs: [createSourcePair({ transcriptText: text, transcriptName: file.name, xmlText: state.xmlText, xmlName: state.xmlName })],
       messages: [],
       suggestedPlan: createEmptyPlan(),
       acceptedPlan: createEmptyPlan(),
@@ -1742,8 +1979,7 @@ async function loadFile(file, kind) {
     await refreshTranscriptSegments();
   } else {
     commitState({
-      xmlText: text,
-      xmlName: file.name,
+      sourcePairs: [createSourcePair({ transcriptText: state.transcriptText, transcriptName: state.transcriptName, xmlText: text, xmlName: file.name })],
       candidateShortlist: [],
       lastError: null,
     }, { clearGeneration: true });
@@ -1764,9 +2000,16 @@ function buildPayload() {
   const effectiveSpeakerBalance = (state.speakerBalance === "balanced" && acceptedPlan.speaker_balance)
     ? acceptedPlan.speaker_balance
     : state.speakerBalance;
+  const completeSources = normalizeSourcePairs(state.sourcePairs).filter((pair) => pair.transcriptText && pair.xmlText);
   return {
     transcript_text: state.transcriptText,
     xml_text: state.xmlText,
+    source_pairs: completeSources.map((pair) => ({
+      transcript_text: pair.transcriptText,
+      xml_text: pair.xmlText,
+      transcript_name: pair.transcriptName,
+      xml_name: pair.xmlName,
+    })),
     brief: state.brief.trim(),
     project_context: state.projectContext.trim(),
     messages: state.messages,
@@ -2005,8 +2248,7 @@ async function writeManualXml() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        transcript_text: state.transcriptText,
-        xml_text: state.xmlText,
+        ...buildPayload(),
         name: `${state.variantName || "manual"}-manual`,
         cuts: state.manualAssemblyIndexes.map((segmentIndex) => ({ segment_index: segmentIndex })),
       }),
@@ -2273,6 +2515,20 @@ function bindEvents() {
     });
   }
 
+  if (sourceList) {
+    sourceList.addEventListener("change", async (event) => {
+      const input = event.target.closest("[data-source-file]");
+      if (!input) {
+        return;
+      }
+      await loadFile(input.files[0], input.dataset.sourceFile, input.dataset.sourceId);
+    });
+  }
+
+  if (addSourceButton) {
+    addSourceButton.addEventListener("click", () => addSourcePair());
+  }
+
   if (xmlFileInput) {
     xmlFileInput.addEventListener("change", async (event) => {
       await loadFile(event.target.files[0], "xml");
@@ -2287,6 +2543,12 @@ function bindEvents() {
 
   if (saveProjectButton) {
     saveProjectButton.addEventListener("click", exportProjectState);
+  }
+
+  if (loadSolarDemoButton) {
+    loadSolarDemoButton.addEventListener("click", () => {
+      void loadSolarDemoWorkspace();
+    });
   }
 
   if (startFreshButton) {
@@ -2376,6 +2638,11 @@ function bindEvents() {
   }
 
   document.addEventListener("click", (event) => {
+    const focusSegment = event.target.closest("[data-focus-segment]");
+    if (focusSegment) {
+      setFocusedSegment(Number(focusSegment.dataset.focusSegment));
+    }
+
     const recoverAction = event.target.closest("[data-recover-action]");
     if (recoverAction) {
       const action = recoverAction.dataset.recoverAction;
@@ -2440,6 +2707,12 @@ function bindEvents() {
       }
     }
 
+    const removeSource = event.target.closest("[data-remove-source]");
+    if (removeSource) {
+      removeSourcePair(removeSource.dataset.removeSource);
+      return;
+    }
+
     const chatKeep = event.target.closest("[data-chat-keep-index]");
     if (chatKeep) {
       toggleAcceptedSegment(Number(chatKeep.dataset.chatKeepIndex));
@@ -2448,6 +2721,7 @@ function bindEvents() {
 }
 
 bindEvents();
+void fetchModels();
 if (
   state.transcriptText
   && (

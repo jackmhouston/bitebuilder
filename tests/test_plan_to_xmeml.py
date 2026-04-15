@@ -9,8 +9,34 @@ from pathlib import Path
 
 from bitebuilder import BiteBuilderError, render_sequence_plan
 from generator.sequence_plan import build_sequence_plan
+from generator.xmeml import generate_sequence
+from parser.premiere_xml import SourceMetadata
 from parser.transcript import TranscriptSegment
 from tests.test_pipeline import TRANSCRIPT_TEXT, XML_TEXT
+
+FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "tonight_mvp"
+
+
+def source_metadata(
+    *,
+    source_name="source.mov",
+    source_path="/Volumes/Demo/source.mov",
+    pathurl="file:///Volumes/Demo/source.mov",
+    duration=120,
+):
+    return SourceMetadata(
+        source_name=source_name,
+        source_path=source_path,
+        pathurl=pathurl,
+        timebase=24,
+        ntsc=False,
+        duration=duration,
+        width=1920,
+        height=1080,
+        audio_depth=24,
+        audio_samplerate=48000,
+        audio_channels=2,
+    )
 
 
 SEGMENTS = [
@@ -50,6 +76,104 @@ def write_plan(path: Path, *, option_id="option-1", option_name="Named Plan") ->
 
 
 class PlanToXmemlTests(unittest.TestCase):
+    def test_tracked_fixture_renders_without_model_and_parses(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = render_sequence_plan(
+                sequence_plan_text=(FIXTURE_DIR / "sequence_plan.json").read_text(encoding="utf-8"),
+                transcript_text=(FIXTURE_DIR / "transcript.txt").read_text(encoding="utf-8"),
+                xml_text=(FIXTURE_DIR / "source.xmeml").read_text(encoding="utf-8"),
+                output_dir=tmpdir,
+                sequence_plan_path=str(FIXTURE_DIR / "sequence_plan.json"),
+            )
+
+            rendered_xml = Path(result["output_path"])
+            root = ET.fromstring(rendered_xml.read_text(encoding="utf-8"))
+            self.assertEqual(root.findtext(".//sequence/name"), "Tonight Proof Cut")
+            clipitems = list(root.iter("clipitem"))
+            self.assertEqual(len(clipitems), 6)
+            self.assertEqual(len(result["cuts"]), 2)
+
+    def test_tracked_fixture_export_contract_matches_phase4_smoke(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = render_sequence_plan(
+                sequence_plan_text=(FIXTURE_DIR / "sequence_plan.json").read_text(encoding="utf-8"),
+                transcript_text=(FIXTURE_DIR / "transcript.txt").read_text(encoding="utf-8"),
+                xml_text=(FIXTURE_DIR / "source.xmeml").read_text(encoding="utf-8"),
+                output_dir=tmpdir,
+                sequence_plan_path=str(FIXTURE_DIR / "sequence_plan.json"),
+            )
+
+            rendered_xml = Path(result["output_path"])
+            metadata = json.loads(Path(result["metadata_path"]).read_text(encoding="utf-8"))
+            root = ET.fromstring(rendered_xml.read_text(encoding="utf-8"))
+            clip_timing = [
+                (
+                    clip.findtext("start"),
+                    clip.findtext("end"),
+                    clip.findtext("in"),
+                    clip.findtext("out"),
+                )
+                for clip in root.iter("clipitem")
+            ]
+
+            self.assertEqual(rendered_xml.name, "Tonight_Proof_Cut.xml")
+            self.assertEqual(root.findtext(".//sequence/name"), "Tonight Proof Cut")
+            self.assertEqual(root.findtext(".//sequence/duration"), "240")
+            self.assertEqual(metadata["option_id"], "option-proof")
+            self.assertEqual(metadata["sequence_name"], "Tonight Proof Cut")
+            self.assertEqual(metadata["cut_count"], 2)
+            self.assertEqual(metadata["source"]["source_name"], "source & proof.mov")
+            self.assertEqual(
+                metadata["source"]["pathurl"],
+                "file:///Volumes/Demo/Bite%20&%20Builder/source%20proof.mov",
+            )
+            self.assertEqual(len(clip_timing), 6)
+            self.assertEqual(
+                clip_timing,
+                [
+                    ("0", "120", "0", "120"),
+                    ("120", "240", "120", "240"),
+                    ("0", "120", "0", "120"),
+                    ("120", "240", "120", "240"),
+                    ("0", "120", "0", "120"),
+                    ("120", "240", "120", "240"),
+                ],
+            )
+
+    def test_generate_sequence_escapes_pathurl_with_xml_sensitive_characters(self):
+        source = source_metadata(
+            source_name="source & proof.mov",
+            source_path="/Volumes/Demo/Bite & Builder/source proof.mov",
+            pathurl="file:///Volumes/Demo/Bite%20&%20Builder/source%20proof.mov",
+        )
+
+        xml_text = generate_sequence(
+            name="Escaped Path",
+            cuts=[{"tc_in": "00:00:00:00", "tc_out": "00:00:02:00"}],
+            source=source,
+        )
+
+        root = ET.fromstring(xml_text)
+        self.assertEqual(
+            root.findtext(".//file/pathurl"),
+            "file:///Volumes/Demo/Bite%20&%20Builder/source%20proof.mov",
+        )
+
+    def test_generate_sequence_rejects_cuts_beyond_source_duration(self):
+        source = source_metadata(
+            source_name="short.mov",
+            source_path="/Volumes/Demo/short.mov",
+            pathurl="file:///Volumes/Demo/short.mov",
+            duration=24,
+        )
+
+        with self.assertRaisesRegex(ValueError, "beyond source duration"):
+            generate_sequence(
+                name="Too Long",
+                cuts=[{"tc_in": "00:00:00:00", "tc_out": "00:00:02:00"}],
+                source=source,
+            )
+
     def test_helper_renders_selected_bites_and_metadata_without_mutating_plan(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)

@@ -20,13 +20,15 @@ import hashlib
 import os
 import re
 import sys
+import uuid
 import xml.etree.ElementTree as ET
+from datetime import UTC, datetime
 
 from parser.transcript import parse_transcript, get_valid_timecodes, format_for_llm
 from parser.transcript import TranscriptValidationError
 from parser.premiere_xml import parse_premiere_xml_string
 from generator.xmeml import generate_sequence, build_deterministic_sequence_id
-from generator.timecode import estimate_duration_seconds
+from generator.timecode import estimate_duration_seconds, tc_to_frames, frames_to_tc
 from generator.sequence_plan import (
     REMOVED_STATUS,
     SELECTED_STATUS,
@@ -64,6 +66,17 @@ from llm.ollama_client import (
 BITEBUILDER_VERSION = "0.1.0"
 PIPELINE_SCHEMA_VERSION = "run-metadata/1"
 GO_TUI_BRIDGE_SCHEMA_VERSION = "go_tui_bridge.v1"
+GO_TUI_GENERATION_EVENTS_SCHEMA_VERSION = "go_tui_generation_events.v1"
+GO_TUI_RUNTIME_BOUNDARY = {
+    "python_authoritative_for": [
+        "model_calls",
+        "sequence_plan_refinement",
+        "sequence_plan_validation",
+        "xmeml_generation",
+    ],
+    "go_tui_role": "bubble_tea_ui_and_subprocess_event_client",
+    "generation_transport": "subprocess_ndjson",
+}
 RUN_METADATA_SOURCE_HASH_VERSION = "source-hash/1"
 TRANSCRIPT_PARSER_VERSION = "transcript-parser/1"
 TRANSCRIPT_VALIDATOR_VERSION = "transcript-validator/1"
@@ -72,7 +85,7 @@ SELECTION_VALIDATOR_VERSION = "selection-validator/1"
 
 
 def _iso_timestamp() -> str:
-    return __import__("datetime").datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _hash_payload(payload: str | bytes) -> str:
@@ -334,17 +347,42 @@ HOOKY_TERMS = (
 )
 INNOVATION_TERMS = (
     "innovation", "innovative", "future", "efficiency", "technology", "tech",
-    "battery", "microgrid", "virtual power plant", "distributed", "clean energy",
+    "new", "modern", "better", "faster",
 )
 ACCESSIBLE_TERMS = ("accessible", "smart", "intelligent", "clear", "simple", "understandable")
-FINANCE_TERMS = ("roi", "finance", "financial", "bill", "utility", "rate", "rates", "save money", "savings")
-TECH_WORKER_TERMS = ("technical worker", "technician", "installer", "field", "crew", "worker")
+SPEAKER_VARIETY_TERMS = (
+    "another voice", "both speakers", "different perspective", "different perspectives",
+    "different voice", "different voices", "multi-speaker", "multi speaker",
+    "multiple speakers", "other speaker", "other speakers", "other voice",
+    "other voices", "second speaker", "speaker variety",
+)
 FILLER_PHRASES = (
     "back to what we were discussing earlier",
     "okay. so here",
     "oh yeah",
     "so meaning",
 )
+BRIEF_KEYWORD_STOPWORDS = {
+    "about", "above", "after", "again", "against", "also", "because", "before",
+    "brief", "build", "create", "could", "every", "focus", "from", "have",
+    "into", "make", "more", "most", "need", "only", "open", "option", "same",
+    "short", "should", "that", "their", "them", "then", "there", "these",
+    "they", "this", "those", "through", "with", "without", "would", "your",
+}
+
+
+def extract_editorial_keywords(editorial_text: str) -> set[str]:
+    """Return generic brief keywords for matching arbitrary interview topics."""
+    return {
+        token
+        for token in re.findall(r"[a-z][a-z0-9'-]{3,}", editorial_text.lower())
+        if token not in BRIEF_KEYWORD_STOPWORDS
+    }
+
+
+def requests_speaker_variety(editorial_text: str) -> bool:
+    """Return whether the brief explicitly asks for multiple speaker perspectives."""
+    return any(term in editorial_text for term in SPEAKER_VARIETY_TERMS)
 
 
 def collect_editorial_text(
@@ -424,7 +462,7 @@ def infer_segment_roles(text: str, duration_seconds: float) -> list[str]:
     ):
         roles.append("PROOF")
 
-    if any(term in lower for term in ("solution", "goal should", "energy independence", "generate their own power", "microgrid", "operate independently")):
+    if any(term in lower for term in ("solution", "goal should", "solve", "works", "operate independently")):
         roles.extend(["SOLUTION", "CONTEXT"])
 
     if any(term in lower for term in ("future", "going away anytime soon", "no brainer", "wave of the future")):
@@ -470,6 +508,17 @@ def score_segment(segment, duration_seconds: float, editorial_text: str) -> tupl
         score += 2
         reasons.append("specific numbers")
 
+    editorial_keywords = extract_editorial_keywords(editorial_text)
+    keyword_hits = sorted(keyword for keyword in editorial_keywords if keyword in lower)
+    if keyword_hits:
+        score += min(5, len(keyword_hits))
+        reasons.append("brief keyword match")
+
+    word_count = len(re.findall(r"\b\w+\b", segment.text))
+    if 5 <= word_count <= 45 and segment.text.strip().endswith((".", "!", "?")):
+        score += 1
+        reasons.append("complete thought")
+
     striking_hits = [phrase for phrase in STRIKING_PHRASE_WEIGHTS if phrase in lower]
     for phrase in striking_hits:
         score += STRIKING_PHRASE_WEIGHTS[phrase]
@@ -484,8 +533,6 @@ def score_segment(segment, duration_seconds: float, editorial_text: str) -> tupl
     wants_weird = any(term in editorial_text for term in ("whacky", "wacky", "weird", "off-center", "off center", "surprising", "unexpected", "contrarian"))
     wants_innovation = any(term in editorial_text for term in INNOVATION_TERMS)
     wants_accessible = any(term in editorial_text for term in ACCESSIBLE_TERMS)
-    wants_finance = any(term in editorial_text for term in FINANCE_TERMS)
-    wants_technical_worker = any(term in editorial_text for term in TECH_WORKER_TERMS)
 
     if wants_hook and ("HOOK" in roles or "REFRAME" in roles):
         score += 4
@@ -507,12 +554,6 @@ def score_segment(segment, duration_seconds: float, editorial_text: str) -> tupl
         if "PROOF" in roles or "SOLUTION" in roles:
             score += 2
             reasons.append("accessible explanation")
-    if wants_finance and any(term in lower for term in FINANCE_TERMS):
-        score += 4
-        reasons.append("finance framing")
-    if wants_technical_worker and segment.speaker != "Speaker 1":
-        score += 4
-        reasons.append("alternate speaker")
 
     return score, reasons, roles
 
@@ -567,20 +608,15 @@ def build_candidate_shortlist(
                 roles = ["HOOK", *roles]
             reasons.append("forced opening")
 
+        speaker_label = (segment.speaker or "").lower()
         if speaker_balance == "ceo":
-            if segment.speaker == "Speaker 1":
+            if "ceo" in speaker_label:
                 score += 4
                 reasons.append("speaker bias: ceo")
-            else:
-                score -= 2
         elif speaker_balance == "worker":
-            if segment.speaker != "Speaker 1":
+            if any(term in speaker_label for term in ("worker", "technician", "installer", "field", "crew")):
                 score += 5
                 reasons.append("speaker bias: worker")
-            else:
-                score -= 2
-        elif speaker_balance == "balanced" and segment.speaker != "Speaker 1":
-            score += 1
 
         candidates.append({
             "segment_index": index,
@@ -1097,7 +1133,7 @@ def enforce_requested_speaker_mix(
     target_duration_range: tuple[int, int] | None,
 ) -> tuple[dict, list[str]]:
     """Try to preserve multi-speaker coverage when the brief explicitly asks for it."""
-    if not any(term in editorial_text for term in TECH_WORKER_TERMS):
+    if not requests_speaker_variety(editorial_text):
         return response, []
 
     candidate_by_tc = {(item["tc_in"], item["tc_out"]): item for item in candidates}
@@ -1310,11 +1346,9 @@ def build_fallback_response(
     target_seconds = (sum(target_duration_range) / 2) if target_duration_range else 50
     ranked = sorted(candidates, key=lambda item: (-item["score"], item["segment_index"]))
 
-    def find_first(required_roles: tuple[str, ...], used: set[int], speaker: str | None = None):
+    def find_first(required_roles: tuple[str, ...], used: set[int]):
         for candidate in ranked:
             if candidate["segment_index"] in used:
-                continue
-            if speaker and candidate["speaker"] != speaker:
                 continue
             if any(role in candidate["roles"] for role in required_roles):
                 return candidate
@@ -1324,7 +1358,7 @@ def build_fallback_response(
     for option_number in range(1, num_options + 1):
         used = set()
         selected = []
-        wants_alt_speaker = any(term in editorial_text for term in TECH_WORKER_TERMS)
+        wants_speaker_variety = requests_speaker_variety(editorial_text)
 
         for role_group in (("HOOK", "REFRAME"), ("CONTEXT", "PIVOT", "SOLUTION"), ("PROOF",), ("PROOF", "SOLUTION"), ("VISION", "BUTTON", "CLOSE")):
             candidate = find_first(role_group, used)
@@ -1332,8 +1366,19 @@ def build_fallback_response(
                 selected.append(candidate)
                 used.add(candidate["segment_index"])
 
-        if wants_alt_speaker:
-            alt_speaker_candidate = find_first(("PROOF", "SOLUTION", "CONTEXT"), used, speaker="Speaker 2") or find_first(("PROOF", "SOLUTION", "CONTEXT"), used, speaker="Speaker 3")
+        if wants_speaker_variety:
+            selected_speakers = {candidate["speaker"] for candidate in selected if candidate.get("speaker")}
+            alt_speaker_candidate = next(
+                (
+                    candidate
+                    for candidate in ranked
+                    if candidate["segment_index"] not in used
+                    and candidate.get("speaker")
+                    and candidate["speaker"] not in selected_speakers
+                    and any(role in candidate["roles"] for role in ("PROOF", "SOLUTION", "CONTEXT"))
+                ),
+                None,
+            )
             if alt_speaker_candidate:
                 selected.insert(min(3, len(selected)), alt_speaker_candidate)
                 used.add(alt_speaker_candidate["segment_index"])
@@ -1993,6 +2038,117 @@ def write_output_files(
     return generated_files, debug_path, debug_files, sequence_plan_path
 
 
+def _parse_selected_bites_intent(raw: str | None) -> list[dict] | None:
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SequencePlanValidationError(f"selected board intent JSON is invalid: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise SequencePlanValidationError("selected board intent must be a JSON object")
+    selected = payload.get("selected_bites")
+    if not isinstance(selected, list) or not selected:
+        raise SequencePlanValidationError("selected board intent must include selected_bites")
+    for index, item in enumerate(selected, start=1):
+        if not isinstance(item, dict):
+            raise SequencePlanValidationError(f"selected_bites[{index}] must be an object")
+    return selected
+
+
+def _validate_selected_intent_timecodes(item: dict, segment, *, timebase: int) -> tuple[str, str]:
+    tc_in = str(item.get("tc_in") or "").strip()
+    tc_out = str(item.get("tc_out") or "").strip()
+    if not tc_in or not tc_out:
+        raise SequencePlanValidationError("selected board bite intent requires tc_in and tc_out")
+    start = tc_to_frames(tc_in, timebase)
+    end = tc_to_frames(tc_out, timebase)
+    segment_start = tc_to_frames(segment.tc_in, timebase)
+    segment_end = tc_to_frames(segment.tc_out, timebase)
+    if start >= end:
+        raise SequencePlanValidationError(f"selected board trim must start before end: {tc_in} - {tc_out}")
+    if start < segment_start or end > segment_end:
+        raise SequencePlanValidationError(
+            "selected board trim must stay within transcript segment "
+            f"{segment.tc_in} - {segment.tc_out}; got {tc_in} - {tc_out}"
+        )
+    return tc_in, tc_out
+
+
+def _apply_selected_board_intent_to_plan_payload(
+    plan_payload: dict,
+    *,
+    selected_bites_json: str | None,
+    option_id: str | None,
+    transcript_segments,
+    timebase: int,
+    ntsc: bool,
+) -> tuple[dict, bool]:
+    selected = _parse_selected_bites_intent(selected_bites_json)
+    if selected is None:
+        return plan_payload, False
+
+    payload = json.loads(json.dumps(plan_payload))
+    option_payload = _target_option_payload(payload, option_id)
+    existing = option_payload.get("bites") or []
+    existing_by_id = {str(bite.get("bite_id")): bite for bite in existing if bite.get("bite_id")}
+    selected_ids = set()
+    selected_bites = []
+
+    for order, item in enumerate(selected, start=1):
+        bite_id = str(item.get("bite_id") or "").strip()
+        if not bite_id:
+            raise SequencePlanValidationError(f"selected_bites[{order}] missing bite_id")
+        base = existing_by_id.get(bite_id)
+        if base is None:
+            raise SequencePlanValidationError(f"selected board bite id not found in sequence plan: {bite_id}")
+
+        segment_index = item.get("segment_index", base.get("segment_index"))
+        if isinstance(segment_index, bool) or not isinstance(segment_index, int):
+            raise SequencePlanValidationError(f"selected board bite {bite_id} segment_index must be an integer")
+        if segment_index < 0 or segment_index >= len(transcript_segments):
+            raise SequencePlanValidationError(f"selected board bite {bite_id} segment_index is outside transcript bounds")
+        segment = transcript_segments[segment_index]
+        tc_in, tc_out = _validate_selected_intent_timecodes(item, segment, timebase=timebase)
+
+        merged = json.loads(json.dumps(base))
+        merged.update({
+            "bite_id": bite_id,
+            "segment_index": segment_index,
+            "tc_in": tc_in,
+            "tc_out": tc_out,
+            "speaker": item.get("speaker") or merged.get("speaker") or segment.speaker,
+            "text": item.get("text") or merged.get("text") or segment.text,
+            "purpose": item.get("purpose") if item.get("purpose") is not None else merged.get("purpose"),
+            "rationale": item.get("rationale") if item.get("rationale") is not None else merged.get("rationale"),
+            "status": SELECTED_STATUS,
+            "source_action": "go_tui_selected_board",
+        })
+        if item.get("replaces_bite_id"):
+            merged["replaces_bite_id"] = item["replaces_bite_id"]
+        selected_bites.append(merged)
+        selected_ids.add(bite_id)
+
+    remaining = []
+    for bite in existing:
+        if str(bite.get("bite_id")) in selected_ids:
+            continue
+        removed = json.loads(json.dumps(bite))
+        removed["status"] = REMOVED_STATUS
+        remaining.append(removed)
+
+    option_payload["bites"] = selected_bites + remaining
+    _refresh_option_duration(option_payload, timebase=timebase, ntsc=ntsc)
+    payload.setdefault("revision_log", []).append({
+        "revision": _next_sequence_plan_revision(payload),
+        "action": "go_tui_selected_board_export",
+        "summary": "Applied Go TUI selected-board intent for export.",
+        "timestamp": _iso_timestamp(),
+    })
+    return payload, True
+
+
 def render_sequence_plan(
     *,
     sequence_plan_text: str,
@@ -2001,6 +2157,7 @@ def render_sequence_plan(
     output_dir: str,
     option_id: str | None = None,
     sequence_plan_path: str | None = None,
+    selected_bites_json: str | None = None,
 ) -> dict:
     """Render a validated sequence-plan option to XMEML without calling the LLM."""
     source = parse_premiere_xml_safe(xml_text)
@@ -2028,8 +2185,21 @@ def render_sequence_plan(
             details={"cause": str(exc)},
         )) from exc
 
+    selected_board_applied = False
     try:
-        plan = SequencePlan.from_dict(sequence_plan_payload, transcript_segments=segments)
+        SequencePlan.from_dict(sequence_plan_payload, transcript_segments=segments)
+        sequence_plan_payload, selected_board_applied = _apply_selected_board_intent_to_plan_payload(
+            sequence_plan_payload,
+            selected_bites_json=selected_bites_json,
+            option_id=option_id,
+            transcript_segments=segments,
+            timebase=source.timebase,
+            ntsc=source.ntsc,
+        )
+        if selected_board_applied:
+            plan = SequencePlan.from_dict(sequence_plan_payload)
+        else:
+            plan = SequencePlan.from_dict(sequence_plan_payload, transcript_segments=segments)
         option = plan.option(option_id)
         cuts = option.to_cuts()
     except Exception as exc:
@@ -2037,8 +2207,8 @@ def render_sequence_plan(
             code="SEQUENCE-PLAN-INVALID",
             error_type="invalid_sequence_plan",
             message="Sequence plan did not validate against the transcript.",
-            expected_input_format="A sequence plan whose bites reference exact transcript segment indexes and timecodes.",
-            next_action="Fix the sequence plan segment indexes/timecodes/statuses and retry.",
+            expected_input_format="A sequence plan whose bites reference transcript segment indexes and valid timecodes.",
+            next_action="Fix the sequence plan or selected-board segment indexes/timecodes/statuses and retry.",
             stage="sequence_plan",
             recoverable=True,
             details={"cause": str(exc)},
@@ -2066,9 +2236,17 @@ def render_sequence_plan(
     with open(output_path, "w", encoding="utf-8") as handle:
         handle.write(xml_str)
 
+    selected_plan_path = None
+    if selected_board_applied:
+        selected_plan_path = os.path.join(output_dir, "_sequence_plan_selected_board.json")
+        with open(selected_plan_path, "w", encoding="utf-8") as handle:
+            json.dump(sequence_plan_payload, handle, indent=2, sort_keys=True)
+
     metadata = {
         "timestamp": _iso_timestamp(),
         "sequence_plan_source": os.path.abspath(sequence_plan_path) if sequence_plan_path else None,
+        "selected_board_intent_applied": selected_board_applied,
+        "selected_board_sequence_plan_path": os.path.abspath(selected_plan_path) if selected_plan_path else None,
         "option_id": option.option_id,
         "sequence_name": sequence_name,
         "generated_xml_path": os.path.abspath(output_path),
@@ -2088,6 +2266,8 @@ def render_sequence_plan(
         "cuts": cuts,
         "output_path": output_path,
         "metadata_path": metadata_path,
+        "selected_board_sequence_plan_path": selected_plan_path,
+        "selected_board_intent_applied": selected_board_applied,
         "metadata": metadata,
     }
 
@@ -2860,7 +3040,7 @@ def _bridge_validation_error(
         code=code,
         error_type="invalid_go_tui_bridge_request",
         message=message,
-        expected_input_format="python bitebuilder.py --go-tui-bridge <setup|media|plan|transcript|bite|assistant> [args]",
+        expected_input_format="python bitebuilder.py --go-tui-bridge <setup|media|plan|transcript|summary|bite|assistant> [args]",
         next_action=next_action,
         stage=f"go_tui_bridge:{operation}",
         recoverable=True,
@@ -2882,6 +3062,37 @@ def _bridge_require_path(args, field_name: str, operation: str) -> str:
     return value
 
 
+def _bridge_xml_source_start_frame(xml_text: str) -> int:
+    root = ET.fromstring(xml_text)
+    clip = root.find('.//sequence/media/video/track/clipitem')
+    if clip is None:
+        return 0
+    clip_in = clip.findtext('in') or '0'
+    try:
+        return int(clip_in)
+    except ValueError:
+        return 0
+
+
+def _bridge_offset_segments(segments, frame_offset: int, *, timebase: int, ntsc: bool):
+    _ = ntsc
+    if frame_offset <= 0:
+        return segments
+    adjusted = []
+    for segment in segments:
+        start = tc_to_frames(segment.tc_in, timebase) + frame_offset
+        end = tc_to_frames(segment.tc_out, timebase) + frame_offset
+        adjusted.append(type(segment)(
+            tc_in=frames_to_tc(start, timebase),
+            tc_out=frames_to_tc(end, timebase),
+            speaker=segment.speaker,
+            text=segment.text,
+            start_line=segment.start_line,
+            end_line=segment.end_line,
+        ))
+    return adjusted
+
+
 def _bridge_load_media(args, operation: str) -> tuple[str, str, object, list]:
     transcript_text = read_text_file(_bridge_require_path(args, "transcript", operation))
     xml_text = read_text_file(_bridge_require_path(args, "xml", operation))
@@ -2895,6 +3106,39 @@ def _bridge_load_media(args, operation: str) -> tuple[str, str, object, list]:
         )
     except TranscriptValidationError as exc:
         raise build_transcript_timecode_error(exc.errors)
+
+    transcript_b = getattr(args, 'transcript_b', None) or ''
+    xml_b = getattr(args, 'xml_b', None) or ''
+    if transcript_b and xml_b:
+        transcript_b_text = read_text_file(transcript_b)
+        xml_b_text = read_text_file(xml_b)
+        source_b = parse_premiere_xml_safe(xml_b_text)
+        if source_b.pathurl != source.pathurl:
+            raise _bridge_validation_error(
+                code='GO-TUI-BRIDGE-MULTI-SOURCE-UNSUPPORTED',
+                message='Two-source bridge mode currently requires both XMLs to reference the same underlying source media.',
+                next_action='Use matching XMLs from the same source media, or continue with a single source.',
+                operation=operation,
+                details={'xml': args.xml, 'xml_b': xml_b},
+            )
+        try:
+            secondary_segments = parse_transcript(
+                transcript_b_text,
+                strict=True,
+                timebase=source_b.timebase,
+                ntsc=source_b.ntsc,
+            )
+        except TranscriptValidationError as exc:
+            raise build_transcript_timecode_error(exc.errors)
+        offset_frames = _bridge_xml_source_start_frame(xml_b_text)
+        secondary_segments = _bridge_offset_segments(
+            secondary_segments,
+            offset_frames,
+            timebase=source.timebase,
+            ntsc=source.ntsc,
+        )
+        transcript_text = transcript_text.rstrip() + "\n\n" + transcript_b_text.lstrip()
+        segments = sorted([*segments, *secondary_segments], key=lambda segment: tc_to_frames(segment.tc_in, source.timebase))
     return transcript_text, xml_text, source, segments
 
 
@@ -2992,6 +3236,150 @@ def _bridge_option_payload(plan: SequencePlan, option_id: str | None = None, *, 
     }
 
 
+def _bridge_bite_card_payload(bite, *, option_id: str, source) -> dict:
+    timecode = f"{bite.tc_in} - {bite.tc_out}"
+    return {
+        "bite_id": bite.bite_id,
+        "option_id": option_id,
+        "label": bite.purpose or bite.dialogue_summary or bite.bite_id,
+        "segment_index": bite.segment_index,
+        "tc_in": bite.tc_in,
+        "tc_out": bite.tc_out,
+        "timecode": timecode,
+        "speaker": bite.speaker or "",
+        "text": bite.text or "",
+        "purpose": bite.purpose or "",
+        "rationale": bite.rationale or "",
+        "status": bite.status,
+        "replaces_bite_id": bite.replaces_bite_id,
+        "duration_seconds": estimate_duration_seconds(bite.tc_in, bite.tc_out, source.timebase, source.ntsc),
+    }
+
+
+def _bridge_selection_validation_error(message: str, operation: str, *, details: dict | None = None) -> BiteBuilderError:
+    return _bridge_validation_error(
+        code="GO-TUI-BRIDGE-SELECTION-INVALID",
+        message=message,
+        next_action="Pass selected-board JSON as {\"selected_bites\":[...]} with bite_id, timecodes, and text.",
+        operation=operation,
+        details=details,
+    )
+
+
+def _bridge_selected_bites_payload(args, operation: str, source, segments) -> list[dict]:
+    raw = (getattr(args, "selected_bites_json", "") or "").strip()
+    if not raw:
+        return []
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise _bridge_selection_validation_error(
+            f"Selected-board intent JSON is invalid: {exc}",
+            operation,
+            details={"cause": str(exc)},
+        ) from exc
+    if not isinstance(payload, dict):
+        raise _bridge_selection_validation_error(
+            "Selected-board intent must be a JSON object.",
+            operation,
+            details={"actual_type": type(payload).__name__},
+        )
+    selected_items = payload.get("selected_bites")
+    if not isinstance(selected_items, list):
+        raise _bridge_selection_validation_error(
+            "Selected-board intent must include selected_bites as a list.",
+            operation,
+            details={"keys": sorted(payload.keys())},
+        )
+
+    plan_cards_by_id = {}
+    if getattr(args, "sequence_plan", None):
+        _, plan = _bridge_plan_payload(args, operation, source, segments)
+        option = plan.option(args.option_id)
+        plan_cards_by_id = {
+            card["bite_id"]: card
+            for card in (
+                _bridge_bite_card_payload(bite, option_id=option.option_id, source=source)
+                for bite in option.bites
+            )
+            if card["bite_id"]
+        }
+
+    selected_cards = []
+    for index, item in enumerate(selected_items, start=1):
+        if not isinstance(item, dict):
+            raise _bridge_selection_validation_error(
+                f"selected_bites[{index}] must be an object.",
+                operation,
+                details={"index": index},
+            )
+        bite_id = str(item.get("bite_id") or "").strip()
+        base = json.loads(json.dumps(plan_cards_by_id.get(bite_id, {})))
+        segment_index = item.get("segment_index", base.get("segment_index", -1))
+        if not isinstance(segment_index, int) or isinstance(segment_index, bool):
+            segment_index = -1
+        segment = segments[segment_index] if 0 <= segment_index < len(segments) else None
+        tc_in = str(item.get("tc_in") or base.get("tc_in") or (segment.tc_in if segment else "") or "")
+        tc_out = str(item.get("tc_out") or base.get("tc_out") or (segment.tc_out if segment else "") or "")
+        text = str(item.get("text") or base.get("text") or (segment.text if segment else "") or "")
+        speaker = str(item.get("speaker") or base.get("speaker") or (segment.speaker if segment else "") or "")
+        try:
+            duration = estimate_duration_seconds(tc_in, tc_out, source.timebase, source.ntsc) if tc_in and tc_out else 0.0
+        except Exception:
+            duration = float(base.get("duration_seconds") or 0)
+        selected_cards.append({
+            "bite_id": bite_id or base.get("bite_id") or f"selected-{index}",
+            "option_id": base.get("option_id") or (getattr(args, "option_id", None) or ""),
+            "label": item.get("label") or base.get("label") or item.get("purpose") or bite_id or f"Selected {index}",
+            "segment_index": segment_index,
+            "tc_in": tc_in,
+            "tc_out": tc_out,
+            "timecode": str(item.get("timecode") or base.get("timecode") or (f"{tc_in} - {tc_out}" if tc_in and tc_out else "")),
+            "speaker": speaker,
+            "text": text,
+            "purpose": str(item.get("purpose") if item.get("purpose") is not None else base.get("purpose", "")),
+            "rationale": str(item.get("rationale") if item.get("rationale") is not None else base.get("rationale", "")),
+            "status": str(item.get("status") or base.get("status") or SELECTED_STATUS),
+            "replaces_bite_id": item.get("replaces_bite_id", base.get("replaces_bite_id")),
+            "duration_seconds": duration,
+        })
+    return selected_cards
+
+
+def _format_bridge_selected_bites_for_prompt(selected_bites: list[dict]) -> str:
+    if not selected_bites:
+        return ""
+    lines = []
+    for index, bite in enumerate(selected_bites, start=1):
+        lines.append(
+            f"{index}. {bite.get('bite_id')} | {bite.get('timecode')} | "
+            f"{bite.get('speaker')} | status={bite.get('status')}"
+        )
+        if bite.get("purpose"):
+            lines.append(f"   Purpose: {bite['purpose']}")
+        if bite.get("text"):
+            lines.append(f"   Text: {bite['text']}")
+        if bite.get("rationale"):
+            lines.append(f"   Rationale: {bite['rationale']}")
+        if bite.get("replaces_bite_id"):
+            lines.append(f"   Replaces: {bite['replaces_bite_id']}")
+    return "\n".join(lines)
+
+
+def _bridge_board_payload(plan: SequencePlan, option_id: str | None, *, source, sequence_plan_path: str) -> dict:
+    option = plan.option(option_id)
+    candidates = [
+        _bridge_bite_card_payload(bite, option_id=option.option_id, source=source)
+        for bite in option.bites
+    ]
+    return {
+        "option_id": option.option_id,
+        "sequence_plan_path": sequence_plan_path,
+        "candidates": candidates,
+        "selected": [card for card in candidates if card["status"] == "selected"],
+    }
+
+
 def _bridge_find_bite(plan: SequencePlan, option_id: str | None, args):
     option = plan.option(option_id)
     if args.bridge_bite_id:
@@ -3031,10 +3419,19 @@ def _bridge_find_bite(plan: SequencePlan, option_id: str | None, args):
     return selected_bites[0] if selected_bites else (option.bites[0] if option.bites else None)
 
 
-def _bridge_assistant_prompt(*, segments, source, brief: str, project_context: str = "") -> str:
+def _bridge_assistant_prompt(
+    *,
+    segments,
+    source,
+    brief: str,
+    project_context: str = "",
+    selection_question: str = "",
+    selected_bites: list[dict] | None = None,
+) -> str:
     """Build a line-by-line editorial assistant prompt for the live Go TUI bridge."""
     source_payload = source.to_dict() if hasattr(source, "to_dict") else {}
     current_brief = brief.strip() or "No creative brief has been provided yet."
+    selected_bites = selected_bites or []
     sections = [
         "## TASK",
         "Read the transcript line by line using every segment index, exact timecode, speaker label, and dialogue below. "
@@ -3048,6 +3445,18 @@ def _bridge_assistant_prompt(*, segments, source, brief: str, project_context: s
     ]
     if project_context.strip():
         sections.extend(["", "## PROJECT CONTEXT", project_context.strip()])
+    if selected_bites:
+        sections.extend([
+            "",
+            "## CURRENT SELECTED BITES",
+            _format_bridge_selected_bites_for_prompt(selected_bites),
+        ])
+    if selection_question.strip():
+        sections.extend([
+            "",
+            "## EDITOR QUESTION ABOUT CURRENT SELECTION",
+            selection_question.strip(),
+        ])
     sections.extend([
         "",
         "## TRANSCRIPT LINE BY LINE",
@@ -3061,6 +3470,7 @@ def _bridge_assistant_prompt(*, segments, source, brief: str, project_context: s
         "Prompt Tuning Notes:",
         "",
         "Rules:",
+        "- If selected bites are provided, answer the editor's question using those exact selected bite texts and timecodes first.",
         "- The suggested creative brief should be directly usable as the next generation brief.",
         "- Cite exact segment indexes like [12] and timecodes for the best supporting moments.",
         "- Prefer a cohesive narrative arc, not a loose list of topics.",
@@ -3070,14 +3480,41 @@ def _bridge_assistant_prompt(*, segments, source, brief: str, project_context: s
     return "\n".join(sections)
 
 
+def _bridge_summary_prompt(*, segments, source) -> str:
+    """Build a narrow transcript-summary prompt for the Go TUI workspace."""
+    source_payload = source.to_dict() if hasattr(source, "to_dict") else {}
+    return "\n".join([
+        "## TASK",
+        "Summarize this interview transcript for a video editor before sequence generation.",
+        "Keep it concise and useful for choosing story bites.",
+        "",
+        "## SOURCE XML SUMMARY",
+        json.dumps(source_payload, indent=2, sort_keys=True),
+        "",
+        "## TRANSCRIPT LINE BY LINE",
+        format_for_llm(segments),
+        "",
+        "## RESPONSE FORMAT",
+        "Return plain text only with:",
+        "- 2-4 sentence interview summary",
+        "- 3-6 likely themes or sections",
+        "- 1-3 likely story arcs",
+        "",
+        "Rules:",
+        "- Cite exact segment indexes like [12] and timecodes for important moments.",
+        "- Do not invent transcript content.",
+        "- Do not write XML.",
+    ])
+
+
 def build_go_tui_bridge_response(args) -> dict:
     """Build a JSON response for the Go TUI bridge."""
     operation = (args.go_tui_bridge or "").strip().lower()
-    if operation not in {"setup", "media", "plan", "transcript", "bite", "assistant"}:
+    if operation not in {"setup", "media", "plan", "transcript", "summary", "bite", "assistant"}:
         raise _bridge_validation_error(
             code="GO-TUI-BRIDGE-UNKNOWN-OPERATION",
             message=f"Unknown Go TUI bridge operation: {args.go_tui_bridge!r}",
-            next_action="Use one of: setup, media, plan, transcript, bite, assistant.",
+            next_action="Use one of: setup, media, plan, transcript, summary, bite, assistant.",
             operation=operation or "unknown",
             details={"operation": args.go_tui_bridge},
         )
@@ -3088,7 +3525,8 @@ def build_go_tui_bridge_response(args) -> dict:
             "capabilities": {
                 "transport": "request_response_json",
                 "mutates_output": False,
-                "operations": ["setup", "media", "plan", "transcript", "bite", "assistant"],
+                "operations": ["setup", "media", "plan", "transcript", "summary", "bite", "assistant"],
+                "runtime_boundary": GO_TUI_RUNTIME_BOUNDARY,
             },
             "defaults": {
                 "model": args.model,
@@ -3127,13 +3565,49 @@ def build_go_tui_bridge_response(args) -> dict:
             ),
         })
 
+    if operation == "summary":
+        summary_debug = {}
+        prompt = _bridge_summary_prompt(segments=segments, source=source)
+        resolved_host, available_models = resolve_host(model=args.model, preferred_host=args.host)
+        summary = generate_text(
+            system_prompt=CHAT_SYSTEM_PROMPT,
+            user_prompt=prompt,
+            model=args.model,
+            host=resolved_host,
+            timeout=args.timeout,
+            thinking_mode=args.thinking_mode,
+            max_tokens=700,
+            debug=summary_debug,
+        )
+        return _bridge_success(operation, {
+            "summary_text": summary,
+            "model": {
+                "requested_id": args.model,
+                "resolved_id": args.model,
+                "host": resolved_host,
+                "available_models": available_models,
+                "thinking_mode": normalize_thinking_mode(args.thinking_mode),
+            },
+            "transcript": {
+                "segment_count": len(segments),
+                "line_by_line_format": "segment_index + exact timecode + speaker + dialogue",
+            },
+            "source": source.to_dict(),
+            "prompt_preview": prompt[:2000],
+            "raw_text": summary_debug.get("raw_text", ""),
+        })
+
     if operation == "assistant":
         suggestion_debug = {}
+        selected_bites = _bridge_selected_bites_payload(args, operation, source, segments)
+        selection_question = getattr(args, "refine_instruction", "") or ""
         prompt = _bridge_assistant_prompt(
             segments=segments,
             source=source,
             brief=args.brief or "",
             project_context=getattr(args, "project_context", "") or "",
+            selection_question=selection_question,
+            selected_bites=selected_bites,
         )
         resolved_host, available_models = resolve_host(model=args.model, preferred_host=args.host)
         suggestion = generate_text(
@@ -3160,6 +3634,12 @@ def build_go_tui_bridge_response(args) -> dict:
                 "line_by_line_format": "segment_index + exact timecode + speaker + dialogue",
             },
             "source": source.to_dict(),
+            "selection_context": {
+                "question": selection_question,
+                "selected_bites": selected_bites,
+                "sequence_plan_path": args.sequence_plan or "",
+                "option_id": args.option_id or "",
+            },
             "prompt_preview": prompt[:2000],
             "raw_text": suggestion_debug.get("raw_text", ""),
         })
@@ -3170,11 +3650,18 @@ def build_go_tui_bridge_response(args) -> dict:
         return _bridge_success(operation, {
             "source": source.to_dict(),
             "plan": plan_payload,
+            "sequence_plan_path": args.sequence_plan,
             "options": [
                 _bridge_option_payload(plan, item.option_id, source=source)
                 for item in plan.options
             ],
             "current_option_id": option.option_id,
+            "board": _bridge_board_payload(
+                plan,
+                args.option_id,
+                source=source,
+                sequence_plan_path=args.sequence_plan,
+            ),
             "summary_text": summarize_sequence_plan(
                 plan,
                 args.option_id,
@@ -3225,6 +3712,352 @@ def run_go_tui_bridge(args) -> int:
         status = 1
     print(json.dumps(envelope, sort_keys=True, separators=(",", ":")))
     return status
+
+
+def _go_tui_generation_event(event: str, request_id: str, **payload) -> dict:
+    envelope = {
+        "event": event,
+        "schema_version": GO_TUI_GENERATION_EVENTS_SCHEMA_VERSION,
+        "request_id": request_id,
+    }
+    envelope.update({key: value for key, value in payload.items() if value is not None})
+    return envelope
+
+
+def _emit_go_tui_generation_event(writer, event: dict) -> None:
+    print(json.dumps(event, sort_keys=True, separators=(",", ":")), file=writer, flush=True)
+
+
+def _go_tui_progress_stage(message: str) -> str:
+    text = (message or "").lower()
+    if "transcript" in text:
+        return "transcript"
+    if "premiere" in text or "xml" in text:
+        return "source"
+    if "model" in text or "selection" in text or "generation" in text:
+        return "model_request"
+    if "output" in text or "writing" in text:
+        return "output"
+    return "pipeline"
+
+
+def _require_go_tui_generation_arg(args, field_name: str) -> str:
+    value = getattr(args, field_name) or ""
+    if not str(value).strip():
+        cli_name = f"--{field_name.replace('_', '-')}"
+        raise BiteBuilderError(build_validation_error(
+            code="GO-TUI-GENERATION-MISSING-ARG",
+            error_type="invalid_go_tui_generation_request",
+            message=f"{cli_name} is required for the Go TUI generation stream.",
+            expected_input_format=(
+                "python bitebuilder.py --go-tui-generate --transcript <path> "
+                "--xml <path> --brief <creative brief> [--output <dir>]"
+            ),
+            next_action=f"Pass {cli_name} and retry generation from the Go TUI.",
+            stage="go_tui_generation:start",
+            recoverable=True,
+            details={"field": field_name},
+        ))
+    return value
+
+
+def run_go_tui_generation(args, writer=None) -> int:
+    """Emit NDJSON generation events for the Go TUI and return a process status."""
+    writer = writer or sys.stdout
+    request_id = str(uuid.uuid4())
+
+    def emit(event: str, **payload) -> None:
+        _emit_go_tui_generation_event(
+            writer,
+            _go_tui_generation_event(event, request_id, **payload),
+        )
+
+    try:
+        transcript_path = _require_go_tui_generation_arg(args, "transcript")
+        xml_path = _require_go_tui_generation_arg(args, "xml")
+        brief = _require_go_tui_generation_arg(args, "brief")
+        emit("started", command="generate", stage="start")
+
+        def progress_callback(message: str) -> None:
+            emit(
+                "progress",
+                stage=_go_tui_progress_stage(message),
+                message=message,
+            )
+
+        result = run_pipeline(
+            transcript_text=read_text_file(transcript_path),
+            xml_text=read_text_file(xml_path),
+            brief=brief,
+            options=args.options,
+            model=args.model,
+            output_dir=args.output,
+            host=args.host,
+            timeout=args.timeout,
+            thinking_mode=args.thinking_mode,
+            progress_callback=progress_callback,
+        )
+
+        if result.get("sequence_plan_path"):
+            emit(
+                "artifact",
+                kind="sequence_plan",
+                path=result["sequence_plan_path"],
+                data={"exportable_sequence_plan_path": result["sequence_plan_path"]},
+            )
+        for item in result.get("output_files", []):
+            if item.get("path"):
+                emit(
+                    "artifact",
+                    kind="xmeml",
+                    path=item["path"],
+                    data={
+                        "filename": item.get("filename"),
+                        "cut_count": item.get("cut_count"),
+                        "sequence_plan_option_id": item.get("sequence_plan_option_id"),
+                    },
+                )
+        emit(
+            "completed",
+            ok=True,
+            stage="complete",
+            data={
+                "output_dir": result.get("output_dir"),
+                "output_file_count": len(result.get("output_files", [])),
+                "sequence_plan_path": result.get("sequence_plan_path"),
+            },
+        )
+        return 0
+    except BiteBuilderError as exc:
+        emit("error", ok=False, stage=exc.error.get("stage"), error=exc.error)
+        return 1
+    except Exception as exc:
+        error = build_validation_error(
+            code="GO-TUI-GENERATION-RUNTIME-FAILED",
+            error_type="runtime_go_tui_generation_failed",
+            message="Go TUI generation failed before completing the event stream.",
+            expected_input_format="Valid generation inputs and a reachable local model runtime.",
+            next_action="Check the generation arguments, model runtime, and input files, then retry.",
+            stage="go_tui_generation:runtime",
+            recoverable=True,
+            details={"cause": str(exc)},
+        )
+        emit("error", ok=False, stage=error.get("stage"), error=error)
+        return 1
+
+
+def _require_go_tui_refinement_arg(args, field_name: str) -> str:
+    value = getattr(args, field_name) or ""
+    if not str(value).strip():
+        cli_name = "--sequence-plan" if field_name == "sequence_plan" else f"--{field_name.replace('_', '-')}"
+        raise BiteBuilderError(build_validation_error(
+            code="GO-TUI-REFINEMENT-MISSING-ARG",
+            error_type="invalid_go_tui_refinement_request",
+            message=f"{cli_name} is required for the Go TUI refinement stream.",
+            expected_input_format=(
+                "python bitebuilder.py --go-tui-refine --sequence-plan <path> "
+                "--transcript <path> --xml <path> --refine-instruction <instruction>"
+            ),
+            next_action=f"Pass {cli_name} and retry refinement from the Go TUI.",
+            stage="go_tui_refinement:start",
+            recoverable=True,
+            details={"field": field_name},
+        ))
+    return value
+
+
+def _require_go_tui_export_arg(args, field_name: str) -> str:
+    value = getattr(args, field_name) or ""
+    if not str(value).strip():
+        cli_name = "--sequence-plan" if field_name == "sequence_plan" else f"--{field_name.replace('_', '-')}"
+        raise BiteBuilderError(build_validation_error(
+            code="GO-TUI-EXPORT-MISSING-ARG",
+            error_type="invalid_go_tui_export_request",
+            message=f"{cli_name} is required for the Go TUI export stream.",
+            expected_input_format=(
+                "python bitebuilder.py --go-tui-export --sequence-plan <path> "
+                "--transcript <path> --xml <path> [--option-id <id>]"
+            ),
+            next_action=f"Pass {cli_name} and retry export from the Go TUI.",
+            stage="go_tui_export:start",
+            recoverable=True,
+            details={"field": field_name},
+        ))
+    return value
+
+
+def run_go_tui_export(args, writer=None) -> int:
+    """Emit NDJSON final-export events for the Go TUI after Python validation."""
+    writer = writer or sys.stdout
+    request_id = str(uuid.uuid4())
+
+    def emit(event: str, **payload) -> None:
+        _emit_go_tui_generation_event(
+            writer,
+            _go_tui_generation_event(event, request_id, **payload),
+        )
+
+    try:
+        sequence_plan_path = _require_go_tui_export_arg(args, "sequence_plan")
+        transcript_path = _require_go_tui_export_arg(args, "transcript")
+        xml_path = _require_go_tui_export_arg(args, "xml")
+        emit("started", command="export", stage="start")
+        emit(
+            "progress",
+            stage="sequence_plan_validation",
+            message="Validating sequence plan, transcript, and trim boundaries in Python before export.",
+        )
+        emit(
+            "progress",
+            stage="xmeml_generation",
+            message="Rendering validated selected bites to XMEML in Python.",
+        )
+
+        result = render_sequence_plan(
+            sequence_plan_text=read_text_file(sequence_plan_path),
+            transcript_text=read_text_file(transcript_path),
+            xml_text=read_text_file(xml_path),
+            output_dir=args.output,
+            option_id=args.option_id,
+            sequence_plan_path=sequence_plan_path,
+            selected_bites_json=args.selected_bites_json,
+        )
+
+        emit(
+            "artifact",
+            kind="xmeml",
+            path=result.get("output_path"),
+            data={
+                "option_id": result.get("option_id"),
+                "sequence_name": result.get("sequence_name"),
+                "cut_count": len(result.get("cuts", [])),
+            },
+        )
+        if result.get("metadata_path"):
+            emit("artifact", kind="metadata", path=result["metadata_path"])
+        if result.get("selected_board_sequence_plan_path"):
+            emit(
+                "artifact",
+                kind="sequence_plan",
+                path=result["selected_board_sequence_plan_path"],
+                data={"exportable_sequence_plan_path": result["selected_board_sequence_plan_path"]},
+            )
+        emit(
+            "completed",
+            ok=True,
+            stage="complete",
+            data={
+                "output_dir": args.output,
+                "sequence_plan_path": sequence_plan_path,
+                "output_path": result.get("output_path"),
+                "metadata_path": result.get("metadata_path"),
+                "option_id": result.get("option_id"),
+                "cut_count": len(result.get("cuts", [])),
+            },
+        )
+        return 0
+    except BiteBuilderError as exc:
+        emit("error", ok=False, stage=exc.error.get("stage"), error=exc.error)
+        return 1
+    except Exception as exc:
+        error = build_validation_error(
+            code="GO-TUI-EXPORT-RUNTIME-FAILED",
+            error_type="runtime_go_tui_export_failed",
+            message="Go TUI export failed before completing the event stream.",
+            expected_input_format="Valid export inputs, a valid sequence plan, and a writable output directory.",
+            next_action="Check the selected files, sequence plan, and output directory, then retry.",
+            stage="go_tui_export:runtime",
+            recoverable=True,
+            details={"cause": str(exc)},
+        )
+        emit("error", ok=False, stage=error.get("stage"), error=error)
+        return 1
+
+
+def run_go_tui_refinement(args, writer=None) -> int:
+    """Emit NDJSON refinement events for the Go TUI and return a process status."""
+    writer = writer or sys.stdout
+    request_id = str(uuid.uuid4())
+
+    def emit(event: str, **payload) -> None:
+        _emit_go_tui_generation_event(
+            writer,
+            _go_tui_generation_event(event, request_id, **payload),
+        )
+
+    try:
+        sequence_plan_path = _require_go_tui_refinement_arg(args, "sequence_plan")
+        transcript_path = _require_go_tui_refinement_arg(args, "transcript")
+        xml_path = _require_go_tui_refinement_arg(args, "xml")
+        instruction = _require_go_tui_refinement_arg(args, "refine_instruction")
+        emit("started", command="refine", stage="start")
+        emit(
+            "progress",
+            stage="sequence_plan_refinement",
+            message="Validating current sequence plan and transcript before refinement.",
+        )
+        emit(
+            "progress",
+            stage="model_request",
+            message="Requesting assistant refinement from the Python model runtime.",
+        )
+
+        result = refine_sequence_plan(
+            sequence_plan_text=read_text_file(sequence_plan_path),
+            transcript_text=read_text_file(transcript_path),
+            xml_text=read_text_file(xml_path),
+            output_dir=args.output,
+            instruction=instruction,
+            option_id=args.option_id,
+            sequence_plan_path=sequence_plan_path,
+            model=args.model,
+            host=args.host,
+            timeout=args.timeout,
+            thinking_mode=args.thinking_mode,
+            max_bite_duration_seconds=args.max_bite_duration,
+            max_total_duration_seconds=args.max_total_duration,
+            require_changed_selected_cuts=args.require_changed_cuts,
+            refinement_retries=args.refinement_retries,
+        )
+
+        emit(
+            "artifact",
+            kind="sequence_plan",
+            path=result.get("revision_path"),
+            data={"exportable_sequence_plan_path": result.get("revision_path")},
+        )
+        emit("artifact", kind="xmeml", path=result.get("output_path"))
+        if result.get("metadata_path"):
+            emit("artifact", kind="metadata", path=result["metadata_path"])
+        emit(
+            "completed",
+            ok=True,
+            stage="complete",
+            data={
+                "output_dir": args.output,
+                "sequence_plan_path": result.get("revision_path"),
+                "output_path": result.get("output_path"),
+                "metadata_path": result.get("metadata_path"),
+                "revision": result.get("revision"),
+            },
+        )
+        return 0
+    except BiteBuilderError as exc:
+        emit("error", ok=False, stage=exc.error.get("stage"), error=exc.error)
+        return 1
+    except Exception as exc:
+        error = build_validation_error(
+            code="GO-TUI-REFINEMENT-RUNTIME-FAILED",
+            error_type="runtime_go_tui_refinement_failed",
+            message="Go TUI refinement failed before completing the event stream.",
+            expected_input_format="Valid refinement inputs and a reachable local model runtime.",
+            next_action="Check the refinement arguments, model runtime, and input files, then retry.",
+            stage="go_tui_refinement:runtime",
+            recoverable=True,
+            details={"cause": str(exc)},
+        )
+        emit("error", ok=False, stage=error.get("stage"), error=error)
+        return 1
 
 
 def _write_and_render_builder_plan(
@@ -3600,6 +4433,12 @@ def main():
 
     if args.go_tui_bridge:
         sys.exit(run_go_tui_bridge(args))
+    if args.go_tui_generate:
+        sys.exit(run_go_tui_generation(args))
+    if args.go_tui_export:
+        sys.exit(run_go_tui_export(args))
+    if args.go_tui_refine:
+        sys.exit(run_go_tui_refinement(args))
 
     print("=" * 60)
     print("  BiteBuilder v1")
@@ -3860,6 +4699,14 @@ Examples:
         help='Path to Premiere Pro XML export (provides source media metadata)'
     )
     parser.add_argument(
+        '--transcript-b', required=False,
+        help='Optional second timecoded transcript .txt file for a combined two-source workspace flow'
+    )
+    parser.add_argument(
+        '--xml-b', required=False,
+        help='Optional second Premiere Pro XML export matching --transcript-b'
+    )
+    parser.add_argument(
         '--brief', required=False,
         help='Creative brief describing the desired edit (quoted string); not required with --sequence-plan'
     )
@@ -3899,7 +4746,22 @@ Examples:
         '--bridge-command',
         dest='go_tui_bridge',
         metavar='OPERATION',
-        help='Emit one JSON envelope for the Go TUI bridge (setup, media, plan, transcript, bite, assistant)'
+        help='Emit one JSON envelope for the Go TUI bridge (setup, media, plan, transcript, summary, bite, assistant)'
+    )
+    parser.add_argument(
+        '--go-tui-generate',
+        action='store_true',
+        help='Emit NDJSON generation events for the Go TUI without human-readable stdout'
+    )
+    parser.add_argument(
+        '--go-tui-export',
+        action='store_true',
+        help='Validate and render a sequence plan through Python, emitting NDJSON export events for the Go TUI'
+    )
+    parser.add_argument(
+        '--go-tui-refine',
+        action='store_true',
+        help='Emit NDJSON sequence-plan refinement events for the Go TUI without human-readable stdout'
     )
     parser.add_argument(
         '--thinking-mode',
@@ -3946,6 +4808,11 @@ Examples:
         help='Retries after a structurally valid refinement fails editorial constraints (default: 1)'
     )
     parser.add_argument(
+        '--selected-bites-json',
+        default='',
+        help='Go TUI export-only selected-board intent JSON; Python applies and validates it before XMEML rendering'
+    )
+    parser.add_argument(
         '--bridge-start-index',
         type=int,
         default=0,
@@ -3982,7 +4849,7 @@ Examples:
         parser.error('--build requires --sequence-plan')
     if args.build and args.refine_instruction:
         parser.error('--build cannot be combined with --refine-instruction')
-    if not args.guided and not args.tui and not args.go_tui_bridge and not args.sequence_plan:
+    if not args.guided and not args.tui and not args.go_tui_bridge and not args.go_tui_generate and not args.go_tui_export and not args.go_tui_refine and not args.sequence_plan:
         missing = []
         if not args.transcript:
             missing.append('--transcript')
@@ -3993,8 +4860,10 @@ Examples:
         if missing:
             parser.error(f"the following arguments are required: {', '.join(missing)}")
     if args.sequence_plan and (not args.transcript or not args.xml):
-        if not args.tui and not args.go_tui_bridge:
+        if not args.tui and not args.go_tui_bridge and not args.go_tui_export and not args.go_tui_refine:
             parser.error('--transcript and --xml are required with --sequence-plan')
+    if bool(args.transcript_b) != bool(args.xml_b):
+        parser.error('--transcript-b and --xml-b must be provided together')
     return args
 
 
