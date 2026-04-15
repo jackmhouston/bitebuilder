@@ -1,11 +1,12 @@
 # Canonical Runtime Proof
 
-For the current fundamentals track, BiteBuilder's canonical runtime is the top-level core:
+For the current BiteBuilder workspace track, the canonical runtime is the top-level Python core plus the local browser workspace:
 
-- `bitebuilder.py` for CLI orchestration
+- `webapp.py` for the active browser workspace at `/workspace`
+- `bitebuilder.py` for CLI orchestration and deterministic export flows
 - `parser/`, `generator/`, and `llm/` for supporting logic
 
-`webapp.py`, `templates/`, and `static/` remain in `main` for reference, but are inactive/low-priority during the fundamentals track. The former duplicate `src/bitebuilder/` tree has been inventoried in `docs/src-bitebuilder-inventory.md` and removed from the active tree.
+`templates/` and `static/` are active parts of the product surface. The former duplicate `src/bitebuilder/` tree has been inventoried in `docs/src-bitebuilder-inventory.md` and removed from the active tree. The Go TUI under `go-tui/` remains in the repo, but it is currently on hold while UI/UX work is focused on the webapp.
 
 ## Proof point
 
@@ -27,14 +28,22 @@ bitebuilder.py
 True
 ```
 
-Optional retained-UI check:
+Workspace proof:
 
 ```bash
 .venv/bin/python - <<'PY'
 from pathlib import Path
 import webapp
 print(Path(webapp.__file__).name)
+print(hasattr(webapp, "app"))
 PY
+```
+
+Expected workspace proof output:
+
+```text
+webapp.py
+True
 ```
 
 Additional supporting checks:
@@ -43,4 +52,5 @@ Additional supporting checks:
 .venv/bin/python -m unittest discover -s tests -p 'test_*.py'
 .venv/bin/python -m compileall bitebuilder.py webapp.py parser generator llm
 .venv/bin/python bitebuilder.py --help
+./bin/bitebuilder flask-smoke
 ```

@@ -127,44 +127,13 @@ class RequestIntFlaskTests(unittest.TestCase):
         self.assertIn('Selection-first edit board', page)
         self.assertIn('Transcript browser', page)
         self.assertIn('Selected lane', page)
-        self.assertIn('Load solar demo', page)
+        self.assertIn('UI priority while the TUI stays on hold', page)
+        self.assertNotIn('Load solar demo', page)
 
-    def test_solar_demo_endpoint_returns_prefill_payload(self):
-        payload = {
-            'project_title': 'Solar innovation story',
-            'variant_name': 'solar-v1',
-            'brief': 'brief',
-            'project_context': 'context',
-            'project_notes': 'notes',
-            'source_pairs': [{'transcript_text': 'a', 'xml_text': 'b', 'transcript_name': 'A.txt', 'xml_name': 'A.xml'}],
-        }
-        with patch('webapp.build_solar_demo_payload', return_value=payload):
-            response = self.client.get('/api/demo/solar-workspace')
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.get_json(), payload)
-
-    def test_solar_demo_endpoint_returns_404_when_demo_files_missing(self):
-        error = bitebuilder.build_validation_error(
-            code='SOLAR-DEMO-MISSING',
-            error_type='missing_file',
-            message='missing',
-            expected_input_format='demo files',
-            next_action='choose files manually',
-            stage='file',
-            recoverable=True,
-        )
-        with patch('webapp.build_solar_demo_payload', side_effect=bitebuilder.BiteBuilderError(error)):
-            response = self.client.get('/api/demo/solar-workspace')
-        self.assertEqual(response.status_code, 404)
-        self.assertEqual(response.get_json()['error']['code'], 'SOLAR-DEMO-MISSING')
-
-    def test_solar_demo_endpoint_is_localhost_only(self):
-        with self.client.application.test_request_context():
-            pass
-        with patch('webapp.build_solar_demo_payload', return_value={'source_pairs': []}):
-            response = self.client.get('/api/demo/solar-workspace', environ_overrides={'REMOTE_ADDR': '10.0.0.5'})
-        self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.get_json()['error']['code'], 'SOLAR-DEMO-LOCAL-ONLY')
+    def test_root_redirects_to_workspace(self):
+        response = self.client.get('/', follow_redirects=False)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.headers['Location'], '/workspace')
 
     def test_parse_transcript_combines_source_pairs_with_secondary_offset(self):
         response = self.client.post('/api/parse-transcript', json={

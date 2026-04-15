@@ -28,8 +28,8 @@ The backend has already proven useful:
 - deterministic XML export
 
 The current weakness is the UI interaction model.
-The old TUI still behaves too much like a wizard / screen stack.
-This prototype should instead behave like an editorial workstation.
+The old TUI behaves too much like a wizard / screen stack, so active UI/UX work is now centered on the browser workspace.
+This prototype should behave like an editorial workstation in the webapp.
 
 ## Product principle
 This is not a chatbot with editing extras.
@@ -106,11 +106,10 @@ Python remains authoritative for:
 - sequence-plan validation
 - XMEML generation
 
-Go remains authoritative for:
+The browser workspace remains authoritative for:
 - workspace UI
 - selection state
-- subprocess orchestration
-- NDJSON event handling
+- request shaping for workspace actions
 - rendering and interaction
 
 ## Reuse strategy

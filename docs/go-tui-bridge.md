@@ -1,5 +1,7 @@
 # Go TUI bridge
 
+Status note: this document is retained as reference for the paused Go TUI prototype. Current UI/UX work is focused on the browser workspace in `webapp.py` at `/workspace`.
+
 This bridge gives the Go TUI a stable, non-server way to inspect
 BiteBuilder state and ask the existing Python backend for model-assistant help
 without importing Python internals or mutating output files. It is intentionally

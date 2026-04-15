@@ -2,13 +2,13 @@
 
 Date: 2026-04-14
 Branch: feat/context-first-editorial-workspace
-Primary implementation surface: Go TUI
+Primary implementation surface: webapp browser workspace (`/workspace`)
 
 ## 1. Problem
 
-The current Go TUI behaves too much like a multi-screen app/wizard.
+The current product needs a simple browser workspace, not more TUI iteration.
 
-That is the wrong interaction model for editorial work.
+The Go TUI is on hold for now.
 
 The operator needs a simple workspace where source context, editorial intent, and current generated bite set are visible together while working.
 
@@ -23,7 +23,7 @@ Current pain points:
 
 Build a simple, context-first editorial workstation for interview-driven sequence generation.
 
-The TUI should support this loop:
+The web workspace should support this loop:
 1. ingest transcript and Premiere XML
 2. ask the model to summarize the transcript/interview
 3. let the user enter the creative ask
@@ -81,7 +81,7 @@ The user exports an importable Premiere XML.
 
 ## 5. UX direction
 
-The Go TUI should pivot from a screen-stack to a main editorial workspace.
+The web workspace should remain the main editorial workspace.
 
 ### Main workspace must keep visible
 At minimum, the working view should keep these visible together:
@@ -109,13 +109,14 @@ It should not dominate the product structure.
 Do not add more product surface area unless it directly supports the loop above.
 
 Out of scope for this branch unless absolutely needed:
+- new TUI feature work beyond keeping existing bridge/reference behavior healthy
 - session autosave / resume
 - doctor / health panel
 - broad visual polish
 - release-readiness docs
 - extra wizard screens
 - non-editorial “assistant mode” concepts
-- moving validation/model/export authority into Go
+- moving validation/model/export authority out of Python
 
 ## 7. Authority split
 
@@ -126,16 +127,16 @@ Python remains authoritative for:
 - sequence-plan validation
 - XMEML generation
 
-Go remains authoritative for:
-- Bubble Tea UI
-- subprocess orchestration
-- NDJSON event handling
-- layout/state/presentation of the editorial workspace
+The browser workspace remains authoritative for:
+- workspace UI and visible editorial state
+- browser-side selection/order state
+- interaction flow and local persistence/export affordances
+- calling Python-backed APIs and surfacing structured status/errors
 
-## 8. Reuse strategy from existing v2 workspace
+## 8. Reuse strategy from existing workspace code
 
 Do not rewrite from scratch.
-Take what is already working from the v2 workspace and reorganize it.
+Take what is already working from the current web workspace and reorganize it.
 
 Expected reusable pieces:
 - transcript ingestion/path handling
@@ -221,30 +222,33 @@ Do not break:
 
 ## 13. Suggested implementation sequence
 
-1. create branch and keep this effort isolated
-2. audit current model.go/UI flow and identify reusable working pieces
-3. define the new main workspace layout
+1. keep the web workspace path canonical and explicit in docs/launchers
+2. audit current webapp/template/browser-state flow and identify reusable working pieces
+3. define the main workspace layout clearly around transcript + ask + board + output
 4. make transcript summary a first-class action/state
 5. reframe brief as creative ask in UI copy and working flow
 6. make generate/regenerate/actions operate from the main workspace
 7. keep transcript + ask + board visible in the same working context
 8. preserve export path and existing backend authority
-9. run Go + Python verification
+9. run Python/webapp verification; run Go tests only as regression coverage for held code
 
 ## 14. Testing expectations
 
 Minimum verification:
-- cd go-tui && go test ./...
-- relevant Python bridge tests
-- make test if changes touch end-to-end flow
-- manual TUI check:
-  1. load transcript
-  2. load XML
-  3. summarize transcript
-  4. enter creative ask
-  5. generate
-  6. iterate on bites
-  7. export XML
+- `.venv/bin/python -m unittest discover -s tests -p 'test_*.py'`
+- `./bin/bitebuilder flask-smoke`
+- `./bin/bitebuilder smoke` if generation/export path changed
+- `cd go-tui && go test ./...` only as regression coverage for held prototype code
+- manual workspace check:
+  1. launch `make workspace` or `./bin/bitebuilder`
+  2. open `/workspace`
+  3. load transcript
+  4. load XML
+  5. summarize transcript or review summary state
+  6. enter creative ask
+  7. generate
+  8. iterate on bites
+  9. export XML
 
 ## 15. Definition of success
 

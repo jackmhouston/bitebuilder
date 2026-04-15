@@ -6,15 +6,15 @@
 3. `llm/ollama_client.py` sends the request to the configured local model runtime (Gemma 4 via llama-server by default; Ollama is still supported) and applies thinking-mode controls.
 4. `generator/xmeml.py` converts approved cuts into Premiere-importable XMEML.
 5. The CLI writes one XML per edit option plus `_llm_response.json`.
-6. `webapp.py` layers a local browser UI on top of the same pipeline with routed intake, context, copilot, and output pages plus the same chat and generation endpoints.
+6. `webapp.py` is the current primary UI surface: it serves the browser workspace at `/workspace` and layers local intake, context, copilot, and output flows on top of the same pipeline.
 
 ## Key Files
 
 | Path | Purpose |
 | --- | --- |
 | `bitebuilder.py` | CLI entrypoint, argument parsing, orchestration, output writing |
-| `webapp.py` | Flask UI and API routes for chat loops, model selection, and XML downloads |
-| `templates/` and `static/` | Routed GUI shell, multi-step pages, shared styling, and browser-side draft state |
+| `webapp.py` | Flask UI and API routes for the primary browser workspace, chat loops, model selection, and XML downloads |
+| `templates/` and `static/` | Active browser workspace shell, routed pages, shared styling, and browser-side draft state |
 | `parser/transcript.py` | Parses transcript blocks into `TranscriptSegment` records |
 | `parser/premiere_xml.py` | Extracts source metadata from Premiere XML |
 | `generator/timecode.py` | Converts between timecode, frame counts, and Premiere ticks |
@@ -30,5 +30,6 @@
 - Premiere Pro for consuming generated XML
 
 ## Current Prototype Boundaries
-- The local GUI works for chat loops and generation, but still needs polish for dev-server workflow and assistive UX.
+- The browser workspace is the active UI/UX surface and should get the product attention first.
+- The Go TUI remains in the repo for reference and bridge coverage, but it is on hold as a front-line UX surface.
 - Model reliability is still the main product risk; strict timecode validation catches bad outputs, but bite selection quality is not yet consistently autonomous.

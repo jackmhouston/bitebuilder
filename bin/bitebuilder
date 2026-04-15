@@ -14,9 +14,10 @@ usage() {
 BiteBuilder dev launcher
 
 Usage:
-  bitebuilder              Start/check model runtime, then open the Go TUI
-  bitebuilder up           Same as default
-  bitebuilder tui          Open the Go TUI only (falls back to Python TUI if Go is unavailable)
+  bitebuilder              Start the browser workspace server
+  bitebuilder workspace    Start the browser workspace server
+  bitebuilder up           Same as workspace
+  bitebuilder tui          Open the Go TUI prototype only (currently on hold for primary UI work)
   bitebuilder model        Start/check local model runtime
   bitebuilder smoke        Run deterministic no-model XML smoke
   bitebuilder test         Run Python + Go tests and compile smoke
@@ -187,6 +188,11 @@ stop_model() {
   rm -f "$MODEL_PID_FILE"
 }
 
+run_workspace() {
+  ensure_venv
+  (cd "$ROOT" && "$VENV_PY" webapp.py)
+}
+
 run_tui() {
   ensure_venv
   resolve_runtime || true
@@ -222,7 +228,7 @@ run_flask_smoke() {
   (cd "$ROOT" && "$VENV_PY" - <<'PY'
 import webapp
 client = webapp.app.test_client()
-for path in ["/", "/project/brief", "/project/chat", "/project/generate", "/project/export", "/project/logs", "/api/models"]:
+for path in ["/", "/workspace", "/project/workspace", "/project/brief", "/project/chat", "/project/generate", "/project/export", "/project/logs", "/api/models"]:
     resp = client.get(path)
     assert resp.status_code < 500, (path, resp.status_code)
 print("flask smoke ok")
@@ -244,15 +250,14 @@ run_tests() {
   fi
 }
 
-cmd="${1:-up}"
+cmd="${1:-workspace}"
 if [[ $# -gt 0 ]]; then
   shift
 fi
 
 case "$cmd" in
-  up)
-    start_model
-    run_tui "$@"
+  workspace|up)
+    run_workspace "$@"
     ;;
   tui)
     run_tui "$@"

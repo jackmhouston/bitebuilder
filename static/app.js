@@ -144,7 +144,6 @@ const xmlFileInput = document.getElementById("xmlFile");
 const sourceList = document.getElementById("sourceList");
 const addSourceButton = document.getElementById("addSourceButton");
 const projectFileInput = document.getElementById("projectFileInput");
-const loadSolarDemoButton = document.getElementById("loadSolarDemoButton");
 const saveProjectButton = document.getElementById("saveProjectButton");
 const transcriptPreview = document.getElementById("transcriptPreview");
 const xmlPreview = document.getElementById("xmlPreview");
@@ -298,10 +297,10 @@ function clearOperationSnapshot() {
 function fixErrorAction(error) {
   const stage = (error && error.stage) || "";
   if (stage === "transcript") {
-    return "/project/intake";
+    return "/workspace";
   }
   if (stage === "premiere_xml") {
-    return "/project/intake";
+    return "/workspace";
   }
   if (stage === "brief") {
     return "/project/brief";
@@ -1195,59 +1194,6 @@ function renderSourceList() {
       </article>
     `;
   }).join("");
-}
-
-async function loadSolarDemoWorkspace() {
-  if (!loadSolarDemoButton) {
-    return;
-  }
-  loadSolarDemoButton.disabled = true;
-  setStatus("Loading solar demo sources...");
-  try {
-    const response = await fetch("/api/demo/solar-workspace");
-    const payload = await response.json();
-    if (!response.ok) {
-      throw payload;
-    }
-    commitState({
-      projectTitle: payload.project_title || "Solar innovation story",
-      variantName: payload.variant_name || "solar-v1",
-      brief: payload.brief || "",
-      projectContext: payload.project_context || "",
-      projectNotes: payload.project_notes || "",
-      sourcePairs: (payload.source_pairs || []).map((pair) => createSourcePair({
-        transcriptText: pair.transcript_text,
-        xmlText: pair.xml_text,
-        transcriptName: pair.transcript_name,
-        xmlName: pair.xml_name,
-      })),
-      messages: [],
-      suggestedPlan: createEmptyPlan(),
-      acceptedPlan: createEmptyPlan(),
-      candidateShortlist: [],
-      manualAssemblyIndexes: [],
-      pinnedSegmentIndexes: [],
-      bannedSegmentIndexes: [],
-      requiredSegmentIndexes: [],
-      lockedSegmentIndexes: [],
-      forcedOpenSegmentIndex: null,
-      focusedSegmentIndex: null,
-      lastError: null,
-    }, { clearGeneration: true, clearError: true });
-    await refreshTranscriptSegments();
-    setStatus("Solar demo sources loaded.");
-  } catch (error) {
-    const details = error.error || error;
-    showError({
-      code: details.code || "SOLAR-DEMO-FAILED",
-      message: details.message || "Could not load solar demo sources.",
-      stage: details.stage || "file",
-      expected_input_format: details.expected_input_format || "Mounted demo files or manual file selection.",
-      next_action: details.next_action || "Reconnect the source volume or choose files manually.",
-    }, "workspace");
-  } finally {
-    loadSolarDemoButton.disabled = false;
-  }
 }
 
 function setLinkEnabled(element, enabled) {
@@ -2543,12 +2489,6 @@ function bindEvents() {
 
   if (saveProjectButton) {
     saveProjectButton.addEventListener("click", exportProjectState);
-  }
-
-  if (loadSolarDemoButton) {
-    loadSolarDemoButton.addEventListener("click", () => {
-      void loadSolarDemoWorkspace();
-    });
   }
 
   if (startFreshButton) {

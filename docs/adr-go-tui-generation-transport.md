@@ -1,6 +1,6 @@
 # ADR: Go TUI Generation Transport
 
-- **Status:** Accepted for the Go TUI prototype transport gate
+- **Status:** Accepted for the Go TUI prototype transport gate (historical reference; the TUI is currently on hold while UI/UX work is focused on the webapp)
 - **Date:** 2026-04-13
 - **Scope:** Phase 4 generation transport for the additive Bubble Tea Go TUI
 

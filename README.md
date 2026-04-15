@@ -25,18 +25,21 @@ BiteBuilder is a compact product and systems project at the intersection of:
 
 ## Current State
 
-- CLI/core pipeline is the current fundamentals focus: parse transcript + Premiere XML, validate exact transcript timecodes, call a local model, and generate XMEML
-- Flask/copilot UI exists in the repo but is low-priority/inactive for the current fundamentals track
-- deterministic validation around transcript boundaries, timecode math, and sequence generation
+- the browser workspace at `/workspace` is the current best interactive surface for shaping a cut
+- the Python core remains authoritative for transcript parsing, exact timecode validation, shortlist/generation logic, and XMEML export
+- the Go TUI remains in the repo as a paused prototype surface while UI/UX work is focused on the web workspace
+- deterministic validation around transcript boundaries, timecode math, and sequence generation stays central regardless of surface
 
 ## Canonical Codepath
 
-The current canonical application path is the top-level core:
+The current canonical application path is the top-level Python core plus the local browser workspace:
 
-- `bitebuilder.py` for the CLI pipeline
-- `parser/`, `generator/`, and `llm/` for supporting logic
+- `webapp.py` for the current selection-first workspace flow
+- `bitebuilder.py` for CLI entrypoints and orchestration
+- `parser/`, `generator/`, and `llm/` for authoritative parsing, validation, prompting, and export logic
+- `templates/` and `static/` for the active browser UI
 
-`webapp.py`, `templates/`, and `static/` remain in `main` for reference, but they are inactive/low-priority during the current fundamentals track. The duplicate `src/bitebuilder/` package has been inventoried in `docs/src-bitebuilder-inventory.md` and removed from the active tree.
+The duplicate `src/bitebuilder/` package has been inventoried in `docs/src-bitebuilder-inventory.md` and removed from the active tree. The Go TUI under `go-tui/` is currently on hold; product and UX decisions should treat the browser workspace as the primary interactive surface.
 
 ## Screenshot Plan
 
@@ -44,7 +47,7 @@ Add one strong UI screenshot near the top of this README.
 
 Target shot:
 
-- the copilot UI (deferred while web UI is inactive/low-priority)
+- the browser workspace at `/workspace`
 - step navigation visible
 - one realistic assistant response rendered as bite cards
 - brief and transcript context visible in the side panel
@@ -67,31 +70,32 @@ Deliverables:
 
 - The current interchange format is Premiere XML/XMEML.
 - Real editorial generation requires a local model runtime (Gemma 4 via llama-server by default; Ollama is still supported).
-- The browser UI expects transcript and XML contents to be uploaded from the client, but it is inactive/low-priority for the current fundamentals track.
-- Future refinement should operate on a structured sequence-plan artifact before adding chat/UI commands.
+- The browser workspace expects transcript and XML contents to be uploaded from the client.
+- Multi-source combine support is currently safest when paired XMLs reference the same underlying source media timeline.
+- Future refinement should continue to operate on a structured sequence-plan artifact instead of hiding editorial state behind wizard-like flows.
 
 ## Run Locally
 
-Canonical local entrypoints for the fundamentals track:
+Preferred local entrypoint:
+
+- Browser workspace: `make workspace`, then open `http://127.0.0.1:8000/workspace`
+- Browser launcher shortcut: `./bin/bitebuilder` or `./bin/bitebuilder workspace` (starts the local server, then open `http://127.0.0.1:8000/workspace`)
+
+Other useful entrypoints:
 
 - CLI help: `.venv/bin/python bitebuilder.py --help`
 - Guided CLI: `.venv/bin/python bitebuilder.py --guided`
-
-Inactive/low-priority UI entrypoint retained for reference:
-
-- Web UI: `.venv/bin/python webapp.py`
+- Go TUI prototype on hold: `make tui`
 
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
-.venv/bin/python bitebuilder.py --help
+make workspace
 ```
 
 ## Tonight MVP Smoke
 
-Use the CLI/core path as the supported quick-start surface. The browser UI is
-available for local exploration, but it is best-effort unless you also run the
-Flask smoke below.
+Use the browser workspace as the preferred interactive surface. Use the CLI/core path for deterministic XML smoke checks. The Go TUI remains in the repo for reference, but active UI/UX work is focused on the webapp.
 
 Set up a local environment:
 
@@ -108,8 +112,7 @@ alias bitebuilder="$PWD/bin/bitebuilder"
 bitebuilder smoke
 ```
 
-Then `bitebuilder` opens the Go TUI after checking/starting the configured local
-model runtime. `bitebuilder tui` skips model startup, and `bitebuilder model`
+Then `bitebuilder` starts the browser workspace server; open `http://127.0.0.1:8000/workspace` in your browser. Use `bitebuilder tui` only for the paused Go TUI prototype, and `bitebuilder model`
 only starts/checks the model. If your model is not already running, set one of:
 
 ```bash

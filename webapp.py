@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
-from flask import Flask, current_app, jsonify, render_template, request, send_from_directory
+from flask import Flask, current_app, jsonify, redirect, render_template, request, send_from_directory
 
 from bitebuilder import (
     build_candidate_shortlist,
@@ -47,35 +47,6 @@ OUTPUT_ROOT = ROOT / "output" / "web"
 CHAT_TRANSCRIPT_LIMIT = 12000
 JOB_STORE = {}
 JOB_LOCK = threading.Lock()
-SOLAR_DEMO_SOURCES = [
-    {
-        "transcript_path": "/Volumes/Two Jackson/001_Transcode/transcripts/CEO Interview.txt",
-        "xml_path": "/Volumes/Two Jackson/001_Transcode/transcripts/CEO-intv.xml",
-        "label": "CEO Interview",
-    },
-    {
-        "transcript_path": "/Volumes/Two Jackson/001_Transcode/transcripts/Technician Interview.txt",
-        "xml_path": "/Volumes/Two Jackson/001_Transcode/transcripts/Technician Interview.xml",
-        "label": "Technician Interview",
-    },
-]
-SOLAR_DEMO_BRIEF = (
-    "Innovation-forward 5-7 minute sequence built from interview bites. Open with the strongest positive proof point, "
-    "not a negative objection. Emphasize first-in-California / forefront-of-technology positioning, then move into clear "
-    "technician-led proof, then land on an insightful, future-facing resolution. Keep it modular, hooky, and editorially "
-    "sharp. Avoid long boring selects. Do not shorten transcript text in any exported bite references."
-)
-SOLAR_DEMO_CONTEXT = (
-    "This cut should feel like a real editor's working board, not a wizard or chatbot. The story direction already established is: "
-    "1. positive innovation-forward opening 2. credibility / first-mover framing 3. technician-led technical proof in the middle "
-    "4. optimistic close about clean energy, resilience, and future viability. Client/style notes: avoid opening on a negative bite; "
-    "bring out the innovation; first people to do it in California; forefront of technology / space; solar survives / clean energy is not going away; "
-    "keep exact transcript bite text and exact timecodes; favor modular, hooky phrasing over long intact selects."
-)
-SOLAR_DEMO_NOTES = (
-    "Working editorial preference: selection-first browser workspace over unclear TUI; exact transcript fidelity matters; visible selected order matters; "
-    "source A/B/many-source ingest should be simple; Python remains authoritative for parsing, validation, generation, and export; this UI should help shape a cut fast, not explain itself for 10 minutes."
-)
 SEGMENT_INDEX_PATTERN = re.compile(r"\[(\d+)\]")
 TIMECODE_RANGE_PATTERN = re.compile(
     r"(\d{2}:\d{2}:\d{2}:\d{2})\s*-\s*(\d{2}:\d{2}:\d{2}:\d{2})"
@@ -87,7 +58,7 @@ APP_STEPS = (
     {
         "key": "intake",
         "label": "Upload",
-        "path": "/",
+        "path": "/workspace",
     },
     {
         "key": "brief",
@@ -700,49 +671,6 @@ def read_text_if_exists(path: Path) -> str:
     return ""
 
 
-def build_solar_demo_payload() -> dict:
-    source_pairs = []
-    missing = []
-    for source in SOLAR_DEMO_SOURCES:
-        transcript_path = Path(source["transcript_path"])
-        xml_path = Path(source["xml_path"])
-        transcript_text = read_text_if_exists(transcript_path)
-        xml_text = read_text_if_exists(xml_path)
-        if not transcript_text or not xml_text:
-            missing.append({
-                "label": source["label"],
-                "has_transcript": bool(transcript_text),
-                "has_xml": bool(xml_text),
-            })
-            continue
-        source_pairs.append({
-            "transcript_text": transcript_text,
-            "xml_text": xml_text,
-            "transcript_name": transcript_path.name,
-            "xml_name": xml_path.name,
-            "label": source["label"],
-        })
-    if missing:
-        raise BiteBuilderError(build_validation_error(
-            code="SOLAR-DEMO-MISSING",
-            error_type="missing_file",
-            message="Could not load one or more solar demo source files.",
-            expected_input_format="Mounted source files at the known solar demo paths.",
-            next_action="Reconnect the source volume or choose files manually in the workspace.",
-            stage="file",
-            recoverable=True,
-            details={"missing": missing},
-        ))
-    return {
-        "project_title": "Solar innovation story",
-        "variant_name": "solar-v1",
-        "brief": SOLAR_DEMO_BRIEF,
-        "project_context": SOLAR_DEMO_CONTEXT,
-        "project_notes": SOLAR_DEMO_NOTES,
-        "source_pairs": source_pairs,
-    }
-
-
 def apply_variant_name(result: dict, run_dir: Path, variant_name: str) -> None:
     variant = (variant_name or "").strip()
     if not variant:
@@ -765,13 +693,7 @@ def create_app() -> Flask:
 
     @app.get("/")
     def index():
-        return render_template(
-            "intake.html",
-            **build_page_context(
-                page_key="intake",
-                page_title="Upload",
-            ),
-        )
+        return redirect("/workspace")
 
     @app.get("/project/intake")
     def project_intake():
@@ -865,23 +787,6 @@ def create_app() -> Flask:
             "default_thinking_mode": normalize_thinking_mode(DEFAULT_THINKING_MODE),
             "host": active_host,
         })
-
-    @app.get("/api/demo/solar-workspace")
-    def solar_workspace_demo():
-        if request.remote_addr not in {"127.0.0.1", "::1", None}:
-            return validation_error_response(validation_error_payload(
-                code="SOLAR-DEMO-LOCAL-ONLY",
-                error_type="permission_denied",
-                message="Solar demo preset is only available from localhost.",
-                expected_input_format="Local browser session on the same machine as the Flask app.",
-                next_action="Open the workspace locally or load sources manually.",
-                stage="access",
-            ), 403)
-        try:
-            payload = build_solar_demo_payload()
-        except BiteBuilderError as exc:
-            return validation_error_response(exc.error, 404)
-        return jsonify(payload)
 
     @app.get("/repo-file/<path:repo_path>")
     def repo_file(repo_path: str):
