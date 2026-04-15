@@ -5,15 +5,17 @@
     <section class="panel panel-span-12 workspace-hero">
       <div class="section-head workspace-hero-head">
         <div>
+          <p class="workspace-eyebrow">Editorial workspace</p>
           <h2>Selection-first edit board</h2>
-          <p class="workspace-subhead">Load files, search the transcript, build the lane, then generate. The web workspace is the current UI priority while the TUI stays on hold. Multi-source combine currently expects source pairs that point at the same underlying master clip.</p>
+          <p class="workspace-subhead">Load the source material, shape the lane, pressure-test the story, then export. Transcript, lane, shortlist, and saved model picks should all stay visible enough to support real editorial decisions.</p>
         </div>
         <div class="actions workspace-top-actions">
-          <button id="saveProjectButton" class="button button-secondary" type="button">Save project</button>
+          <button id="saveProjectButton" class="button button-secondary" type="button">Export project file</button>
           <label class="button button-secondary file-button">
-            <span>Load project</span>
+            <span>Load project file</span>
             <input id="projectFileInput" type="file" accept=".json,.bitebuilder-project.json">
           </label>
+          <button id="saveSnapshotButton" class="button button-secondary" type="button">Save snapshot</button>
           <button id="startFreshButton" class="button button-secondary" type="button">Start fresh</button>
         </div>
       </div>
@@ -30,6 +32,7 @@
               <button id="addSourceButton" class="button button-secondary" type="button">Add source</button>
             </div>
           </div>
+          <p class="workspace-column-note">Each source pair carries its own transcript and XML and will be saved in snapshots and exported project files. Combined generation currently expects source pairs that point at the same underlying media.</p>
           <div id="sourceList" class="results"></div>
         </div>
         <label>
@@ -39,6 +42,10 @@
       </div>
 
       <div class="stats-grid workspace-stats-grid">
+        <article class="stat-card">
+          <span>Sources</span>
+          <strong data-bind="sourceCountSummary">1</strong>
+        </article>
         <article class="stat-card">
           <span>Transcript</span>
           <strong data-bind="transcriptName">No transcript loaded</strong>
@@ -56,8 +63,12 @@
           <strong data-bind="modelName">Checking local models…</strong>
         </article>
         <article class="stat-card">
-          <span>Options</span>
-          <strong data-bind="optionsSummary">3</strong>
+          <span>Saved from model</span>
+          <strong data-bind="savedBitesSummary">0</strong>
+        </article>
+        <article class="stat-card">
+          <span>Lane</span>
+          <strong data-bind="laneCountSummary">0</strong>
         </article>
         <article class="stat-card">
           <span>Variant</span>
@@ -65,25 +76,33 @@
         </article>
       </div>
 
+      <div class="workspace-snapshot-strip">
+        <div class="section-head">
+          <h3>Saved drafts</h3>
+          <p class="workspace-column-note">Snapshots preserve the current project title, source pairs, transcript/XML text, lane, chat, and accepted picks.</p>
+        </div>
+        <div id="savedDrafts" class="results"></div>
+      </div>
+
       <div class="field-grid workspace-notes-grid">
         <label>
-          <span>Creative brief</span>
-          <textarea id="briefInput" rows="5" placeholder="Innovation-forward open, technical middle, insightful close. Avoid long boring selects."></textarea>
+          <span>Creative ask</span>
+          <textarea id="briefInput" rows="5" placeholder="What should this cut do emotionally and structurally? Name the hook, middle turn, close, and what to avoid."></textarea>
         </label>
         <label>
-          <span>Project context</span>
-          <textarea id="contextInput" rows="5" placeholder="Audience, tone, client concerns, what to prove, what to avoid."></textarea>
+          <span>Story context</span>
+          <textarea id="contextInput" rows="5" placeholder="Audience, channel, decision-maker concerns, proof points, and why this story matters right now."></textarea>
         </label>
         <label>
-          <span>Project notes</span>
-          <textarea id="projectNotesInput" rows="5" placeholder="Anything worth remembering about the cut or the client."></textarea>
+          <span>Cut notes</span>
+          <textarea id="projectNotesInput" rows="5" placeholder="Keep exact transcript fidelity, speaker priorities, exclusions, delivery notes, or editorial reminders."></textarea>
         </label>
       </div>
 
       <div class="actions workspace-run-actions">
-        <button id="previewShortlistButton" class="button button-secondary" type="button">Refresh candidates</button>
+        <button id="previewShortlistButton" class="button button-secondary" type="button">Pull shortlist</button>
         <button id="generateButton" class="button" type="button">Generate XML</button>
-        <button id="rerunSameFilesButton" class="button button-secondary" type="button">Run again</button>
+        <button id="rerunSameFilesButton" class="button button-secondary" type="button">Rebuild current pass</button>
         <button id="openFolderButton" class="button button-secondary" type="button">Open output folder</button>
       </div>
 
@@ -109,10 +128,10 @@
       <div class="section-head">
         <h2>Selected lane</h2>
       </div>
-      <div class="workspace-column-note">This is the current hand-built order. Click any card to focus it.</div>
+      <div class="workspace-column-note">This is the live sequence spine. Keep the strongest opening, trim repetition fast, and click any card to focus it.</div>
       <div id="manualLane" class="results"></div>
       <div class="actions">
-        <button id="manualXmlButton" class="button button-secondary" type="button">Write XML from lane</button>
+        <button id="manualXmlButton" class="button button-secondary" type="button">Export lane XML</button>
       </div>
 
       <div class="section-head">
@@ -142,7 +161,7 @@
       <div class="section-head">
         <h2>Candidate shortlist</h2>
       </div>
-      <div class="workspace-column-note">Fast pull list from the current brief, chat direction, and locked selections. Source pairs must reference the same master clip for combined generation right now.</div>
+      <div class="workspace-column-note">Fast pull list from the current ask, active context, and any pinned selections. Use it to pressure-test hooks, pivots, and alternates without losing transcript fidelity.</div>
       <div id="shortlistList" class="results"></div>
     </section>
 
@@ -150,12 +169,13 @@
       <div class="section-head">
         <h2>Ask / refine</h2>
       </div>
+      <div class="workspace-column-note chat-guidance">Click numbered bite chips in assistant replies to save or un-save them for the next generate pass. Saved picks stay visible below.</div>
       <div id="chatLog" class="chat-log">
-        <div class="chat-empty">No chat yet.</div>
+        <div class="chat-empty">No notes yet.</div>
       </div>
       <label>
-        <span>Ask about the current cut</span>
-        <textarea id="chatInput" rows="4" placeholder="What is the strongest hook here, and what should the lane pivot into next?"></textarea>
+        <span>Ask the edit board</span>
+        <textarea id="chatInput" rows="4" placeholder="What is the cleanest hook here, what should the lane pivot into next, and which line is buying us the least?" ></textarea>
       </label>
       <div class="actions">
         <button id="chatButton" class="button" type="button">Ask</button>
@@ -163,7 +183,7 @@
       </div>
 
       <div class="section-head">
-        <h3>Accepted edit decisions</h3>
+        <h3>Saved from model</h3>
       </div>
       <div id="acceptedPlanSummary" class="results"></div>
     </section>

@@ -1,4 +1,5 @@
 const STORAGE_KEY = "bitebuilder.studio.draft.v2";
+const SAVED_DRAFTS_KEY = "bitebuilder.studio.saved-drafts.v1";
 const WORKFLOW_OPERATION_SNAPSHOTS = ["received", "validating", "prompting", "generating", "finalizing"];
 
 function createEmptyPlan() {
@@ -89,6 +90,15 @@ function createDefaultState() {
   };
 }
 
+function loadSavedDrafts() {
+  try {
+    const raw = JSON.parse(window.localStorage.getItem(SAVED_DRAFTS_KEY) || "[]");
+    return Array.isArray(raw) ? raw : [];
+  } catch (_error) {
+    return [];
+  }
+}
+
 function loadState() {
   try {
     const saved = JSON.parse(window.localStorage.getItem(STORAGE_KEY) || "{}");
@@ -122,6 +132,7 @@ function loadState() {
 }
 
 let state = loadState();
+let savedDrafts = loadSavedDrafts();
 let modelInventory = [];
 let modelLookupState = "idle";
 let modelLookupMessage = "";
@@ -145,6 +156,8 @@ const sourceList = document.getElementById("sourceList");
 const addSourceButton = document.getElementById("addSourceButton");
 const projectFileInput = document.getElementById("projectFileInput");
 const saveProjectButton = document.getElementById("saveProjectButton");
+const saveSnapshotButton = document.getElementById("saveSnapshotButton");
+const savedDraftsPanel = document.getElementById("savedDrafts");
 const transcriptPreview = document.getElementById("transcriptPreview");
 const xmlPreview = document.getElementById("xmlPreview");
 const startFreshButton = document.getElementById("startFreshButton");
@@ -179,6 +192,85 @@ const jobLog = document.getElementById("jobLog");
 
 function persistState() {
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+}
+
+function persistSavedDrafts() {
+  try {
+    window.localStorage.setItem(SAVED_DRAFTS_KEY, JSON.stringify(savedDrafts));
+    return true;
+  } catch (_error) {
+    return false;
+  }
+}
+
+function currentSourceCount() {
+  return normalizeSourcePairs(state.sourcePairs).length;
+}
+
+function currentSavedBiteCount() {
+  const accepted = normalizePlan(state.acceptedPlan);
+  const saved = new Set(accepted.must_include_segment_indexes);
+  if (Number.isInteger(accepted.opening_segment_index)) {
+    saved.add(accepted.opening_segment_index);
+  }
+  return saved.size;
+}
+
+function snapshotSummaryText(snapshotState) {
+  const pairs = normalizeSourcePairs(snapshotState.sourcePairs, snapshotState);
+  const completeCount = pairs.filter((pair) => pair.transcriptText && pair.xmlText).length;
+  const laneCount = Array.isArray(snapshotState.manualAssemblyIndexes) ? snapshotState.manualAssemblyIndexes.length : 0;
+  const accepted = normalizePlan(snapshotState.acceptedPlan);
+  const saved = new Set(accepted.must_include_segment_indexes);
+  if (Number.isInteger(accepted.opening_segment_index)) {
+    saved.add(accepted.opening_segment_index);
+  }
+  return `${pairs.length} source${pairs.length === 1 ? "" : "s"} | ${completeCount} ready | ${laneCount} lane | ${saved.size} saved`;
+}
+
+function saveSnapshot() {
+  const timestamp = new Date().toISOString();
+  const title = (state.projectTitle || state.transcriptName || "Untitled project").trim() || "Untitled project";
+  const snapshot = {
+    id: `draft-${Date.now()}`,
+    title,
+    saved_at: timestamp,
+    summary: snapshotSummaryText(state),
+    state,
+  };
+  savedDrafts = [snapshot, ...savedDrafts].slice(0, 8);
+  while (savedDrafts.length && !persistSavedDrafts()) {
+    savedDrafts = savedDrafts.slice(0, -1);
+  }
+  renderSavedDrafts();
+  if (!savedDrafts.some((item) => item.id === snapshot.id)) {
+    setStatus("Could not save a full snapshot locally. Try exporting a project file instead.");
+    return;
+  }
+  setStatus(`Saved snapshot: ${title}.`);
+}
+
+function restoreSnapshot(snapshotId) {
+  const snapshot = savedDrafts.find((item) => item.id === snapshotId);
+  if (!snapshot) {
+    return;
+  }
+  const loaded = normalizeStatePatch(snapshot.state || {});
+  state = {
+    ...createDefaultState(),
+    ...loaded,
+    messages: Array.isArray(loaded.messages) ? loaded.messages : [],
+  };
+  persistState();
+  renderAll();
+  setStatus(`Restored snapshot: ${snapshot.title}.`);
+}
+
+function deleteSnapshot(snapshotId) {
+  savedDrafts = savedDrafts.filter((item) => item.id !== snapshotId);
+  persistSavedDrafts();
+  renderSavedDrafts();
+  setStatus("Snapshot deleted.");
 }
 
 function commitState(patch, { clearGeneration = false, clearError = false } = {}) {
@@ -1173,10 +1265,14 @@ function renderSourceList() {
   sourceList.innerHTML = pairs.map((pair, index) => {
     const loadedTranscript = pair.transcriptName || "No transcript loaded";
     const loadedXml = pair.xmlName || "No XML loaded";
+    const isReady = Boolean(pair.transcriptText && pair.xmlText);
     return `
-      <article class="result-card source-card">
+      <article class="result-card source-card${isReady ? " is-kept" : ""}">
         <div class="result-card-head">
           <strong>Source ${index + 1}</strong>
+          <div class="segment-badges">
+            <span class="selection-pill">${isReady ? "Ready" : "Incomplete"}</span>
+          </div>
           <div class="result-links">
             <button class="button button-secondary" type="button" data-remove-source="${pair.id}" ${pairs.length === 1 ? "disabled" : ""}>Remove</button>
           </div>
@@ -1194,6 +1290,29 @@ function renderSourceList() {
       </article>
     `;
   }).join("");
+}
+
+function renderSavedDrafts() {
+  if (!savedDraftsPanel) {
+    return;
+  }
+  if (!savedDrafts.length) {
+    savedDraftsPanel.innerHTML = '<div class="result-card"><strong>No saved drafts yet.</strong><span class="result-meta">Save snapshot to preserve the current project, transcript/XML pairs, lane, and model picks.</span></div>';
+    return;
+  }
+  savedDraftsPanel.innerHTML = savedDrafts.map((snapshot) => `
+    <article class="result-card snapshot-card">
+      <div class="result-card-head">
+        <strong>${escapeHtml(snapshot.title || 'Untitled project')}</strong>
+        <div class="result-links">
+          <button class="button button-secondary" type="button" data-restore-snapshot="${snapshot.id}">Restore</button>
+          <button class="button button-secondary" type="button" data-delete-snapshot="${snapshot.id}">Delete</button>
+        </div>
+      </div>
+      <div class="result-meta">${escapeHtml(snapshot.summary || '')}</div>
+      <div class="result-meta">Saved ${escapeHtml(new Date(snapshot.saved_at).toLocaleString())}</div>
+    </article>
+  `).join('');
 }
 
 function setLinkEnabled(element, enabled) {
@@ -1235,9 +1354,9 @@ function stepRule(stepKey) {
     case "brief":
       return { enabled: isFilesReady(), message: "Load the transcript and the Premiere XML first." };
     case "chat":
-      return { enabled: isFilesReady() && isBriefReady(), message: "Load the files and write the brief first." };
+      return { enabled: isFilesReady(), message: "Load the files first." };
     case "generate":
-      return { enabled: isGenerateReady(), message: "Check local models and choose one first." };
+      return { enabled: isGenerateReady(), message: "Write the creative ask and choose a model first." };
     case "export":
       return { enabled: hasGeneration(), message: "Generate XML first." };
     default:
@@ -1259,20 +1378,18 @@ function renderPageStatus() {
       if (!isFilesReady()) {
         setStatus("Load the files first.");
       } else if (isBriefReady()) {
-        setStatus("Brief saved.");
+        setStatus("Creative ask saved.");
       } else {
-        setStatus("Write the brief.");
+        setStatus("Write the creative ask.");
       }
       break;
     case "chat":
       if (!isFilesReady()) {
         setStatus("Load the files first.");
-      } else if (!isBriefReady()) {
-        setStatus("Write the brief first.");
       } else if (!isModelReady()) {
-        setStatus("Check local models.");
+        setStatus("Choose a local model, then ask about the cut.");
       } else {
-        setStatus("Chat ready.");
+        setStatus("Ask about hooks, pivots, alternates, or what to save.");
       }
       break;
     case "generate":
@@ -1281,9 +1398,9 @@ function renderPageStatus() {
       } else if (!isFilesReady()) {
         setStatus("Load the files first.");
       } else if (!isBriefReady()) {
-        setStatus("Write the brief first.");
+        setStatus("Write the creative ask first.");
       } else if (!isModelReady()) {
-        setStatus("Go back to Chat and choose a model.");
+        setStatus("Choose a local model first.");
       } else {
         setStatus("Ready to generate.");
       }
@@ -1301,9 +1418,9 @@ function renderPageStatus() {
       if (state.currentJob) {
         setStatus(state.currentJobLogs.at(-1)?.message || "Generating...");
       } else if (!isFilesReady()) {
-        setStatus("Load the transcript and Premiere XML.");
+        setStatus("Load the transcript and Premiere XML to start shaping the board.");
       } else if (!isBriefReady()) {
-        setStatus("Write the brief, then start pulling bites into the lane.");
+        setStatus("Write the creative ask, then start pulling bites into the lane.");
       } else {
         setStatus("Workspace ready. Search, select, reorder, then generate.");
       }
@@ -1346,7 +1463,10 @@ function renderStateSnapshot() {
   updateBindings("projectTitle", state.projectTitle || "Untitled project");
   updateBindings("transcriptName", state.transcriptName || "No transcript loaded");
   updateBindings("xmlName", state.xmlName || "No XML loaded");
-  updateBindings("segmentCount", String(countTranscriptSegments(state.transcriptText)));
+  updateBindings("segmentCount", String(Array.isArray(state.transcriptSegments) ? state.transcriptSegments.length : countTranscriptSegments(state.transcriptText)));
+  updateBindings("sourceCountSummary", String(currentSourceCount()));
+  updateBindings("savedBitesSummary", String(currentSavedBiteCount()));
+  updateBindings("laneCountSummary", String((state.manualAssemblyIndexes || []).length));
   updateBindings("briefPreview", compactText(state.brief, "No brief yet."));
   updateBindings("contextPreview", compactText(state.projectContext, "No project context yet."));
   updateBindings("notesPreview", compactText(state.projectNotes, "No notes yet."));
@@ -1389,7 +1509,7 @@ function renderChat() {
   if (chatLog) {
     const shouldStick = (chatLog.scrollTop + chatLog.clientHeight) >= (chatLog.scrollHeight - 40);
     if (!state.messages.length) {
-      chatLog.innerHTML = '<div class="chat-empty">No chat yet.</div>';
+      chatLog.innerHTML = '<div class="chat-empty">No notes yet. Ask for hooks, pivots, trims, or alternate lanes.</div>';
     } else {
       chatLog.innerHTML = state.messages
         .map((message) => `
@@ -1407,7 +1527,7 @@ function renderChat() {
 
   setLinkEnabled(continueFromChatButton, isGenerateReady());
   if (chatButton) {
-    chatButton.disabled = !isGenerateReady();
+    chatButton.disabled = !isFilesReady() || !isModelReady();
   }
   renderSuggestedPlan();
   renderAcceptedPlan();
@@ -1428,7 +1548,7 @@ function renderGenerate() {
   if (previewTimeline) {
     const preview = derivePreviewCuts();
     previewTimeline.innerHTML = renderTimelineHtml(preview.cuts, {
-      emptyText: "No preview yet. Keep a few transcript lines or refresh candidates.",
+      emptyText: "No preview yet. Build a lane or pull a shortlist to start seeing structure.",
       source: preview.source,
     });
   }
@@ -1440,7 +1560,7 @@ function renderResults(payload) {
   }
 
   if (!payload) {
-    results.innerHTML = '<div class="result-card"><strong>No run.</strong></div>';
+    results.innerHTML = '<div class="result-card"><strong>No run yet.</strong><span class="result-meta">Generate a pass or export the current lane to populate results here.</span></div>';
     return;
   }
 
@@ -1545,7 +1665,7 @@ function renderAcceptedPlan() {
       </div>
     `
     : "";
-  acceptedPlanPanel.innerHTML = renderPlanHtml(state.acceptedPlan, "No accepted edit decisions yet.", actions, "accepted");
+  acceptedPlanPanel.innerHTML = renderPlanHtml(state.acceptedPlan, "No accepted edit decisions yet. Keep notes here once a lane direction is locked.", actions, "accepted");
 }
 
 function renderAcceptedPlanSummary() {
@@ -1561,7 +1681,7 @@ function renderAcceptedPlanSummary() {
     : "";
   acceptedPlanSummary.innerHTML = renderPlanHtml(
     state.acceptedPlan,
-    "No accepted edit decisions.",
+    "No saved bites from the model yet. Click numbered bite chips in assistant replies to hold lines for the next generate pass.",
     actions,
     "accepted",
   );
@@ -1585,7 +1705,7 @@ function renderTranscriptBrowser() {
   });
 
   if (!segments.length) {
-    transcriptBrowser.innerHTML = '<div class="result-card"><strong>No transcript segments.</strong></div>';
+    transcriptBrowser.innerHTML = '<div class="result-card"><strong>No transcript segments yet.</strong><span class="result-meta">Load source material to browse lines, speakers, and timecodes here.</span></div>';
     return;
   }
 
@@ -1624,7 +1744,7 @@ function renderManualLane() {
     return;
   }
   if (!state.manualAssemblyIndexes.length) {
-    manualLane.innerHTML = '<div class="result-card"><strong>No manual bites yet.</strong></div>';
+    manualLane.innerHTML = '<div class="result-card"><strong>No bites in the lane yet.</strong><span class="result-meta">Promote strong transcript lines here to build the live sequence spine.</span></div>';
     if (manualXmlButton) {
       manualXmlButton.disabled = true;
     }
@@ -1664,7 +1784,7 @@ function renderShortlist() {
   }
   const candidates = state.candidateShortlist || [];
   if (!candidates.length) {
-    shortlistList.innerHTML = '<div class="result-card"><strong>No shortlist preview yet.</strong></div>';
+    shortlistList.innerHTML = '<div class="result-card"><strong>No shortlist yet.</strong><span class="result-meta">Pull a shortlist after loading source material and writing the creative ask.</span></div>';
     return;
   }
   shortlistList.innerHTML = candidates.map((candidate) => {
@@ -1706,7 +1826,7 @@ function renderSelectedBites() {
     : preview.source || "No kept cut yet.";
 
   if (!cuts.length) {
-    selectedBites.innerHTML = '<div class="result-card"><strong>No selected bites yet.</strong></div>';
+    selectedBites.innerHTML = '<div class="result-card"><strong>No working order yet.</strong><span class="result-meta">As soon as you keep bites in the lane, the sequence preview will read back here.</span></div>';
     return;
   }
   selectedBites.innerHTML = `
@@ -1841,6 +1961,7 @@ function renderAll() {
   renderChat();
   renderGenerate();
   renderSourceList();
+  renderSavedDrafts();
   renderResults(getActiveGeneration());
   renderTranscriptBrowser();
   renderManualLane();
@@ -1984,10 +2105,6 @@ async function sendChat() {
     setStatus("Load the files first.");
     return;
   }
-  if (!isBriefReady()) {
-    setStatus("Write the brief first.");
-    return;
-  }
   if (!isModelReady()) {
     setStatus("Check local models and choose one first.");
     return;
@@ -2040,7 +2157,7 @@ async function sendChat() {
     }, "chat");
     return;
   } finally {
-    chatButton.disabled = !isGenerateReady();
+    chatButton.disabled = !isFilesReady() || !isModelReady();
   }
 }
 
@@ -2319,13 +2436,15 @@ function toggleAcceptedSegment(index) {
   } else {
     nextIncludes.add(index);
   }
+  const savedNow = nextIncludes.has(index);
   commitState({
     acceptedPlan: {
       ...accepted,
       must_include_segment_indexes: Array.from(nextIncludes),
     },
+    focusedSegmentIndex: index,
   }, { clearGeneration: true });
-  setStatus(nextIncludes.has(index) ? `Kept [${index}] for generate.` : `Removed [${index}] from kept selections.`);
+  setStatus(savedNow ? `Saved [${index}] from model for the next generate pass.` : `Removed [${index}] from saved model picks.`);
 }
 
 function resetDraft(redirectPath = null) {
@@ -2491,6 +2610,10 @@ function bindEvents() {
     saveProjectButton.addEventListener("click", exportProjectState);
   }
 
+  if (saveSnapshotButton) {
+    saveSnapshotButton.addEventListener("click", saveSnapshot);
+  }
+
   if (startFreshButton) {
     startFreshButton.addEventListener("click", () => resetDraft());
   }
@@ -2650,6 +2773,18 @@ function bindEvents() {
     const removeSource = event.target.closest("[data-remove-source]");
     if (removeSource) {
       removeSourcePair(removeSource.dataset.removeSource);
+      return;
+    }
+
+    const restoreSnapshotButton = event.target.closest("[data-restore-snapshot]");
+    if (restoreSnapshotButton) {
+      restoreSnapshot(restoreSnapshotButton.dataset.restoreSnapshot);
+      return;
+    }
+
+    const deleteSnapshotButton = event.target.closest("[data-delete-snapshot]");
+    if (deleteSnapshotButton) {
+      deleteSnapshot(deleteSnapshotButton.dataset.deleteSnapshot);
       return;
     }
 

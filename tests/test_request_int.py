@@ -10,6 +10,12 @@ class RequestIntTests(unittest.TestCase):
     def test_import_resolves_to_top_level_module(self):
         self.assertEqual(Path(bitebuilder.__file__).name, 'bitebuilder.py')
 
+    def test_workspace_css_uses_times_new_roman_and_no_gradients(self):
+        css = Path('static/app.css').read_text()
+        self.assertIn('font-family: "Times New Roman"', css)
+        self.assertNotIn('linear-gradient', css)
+        self.assertNotIn('radial-gradient', css)
+
     def test_uses_default_for_missing_value(self):
         value = bitebuilder.coerce_request_int(None, field_name='timeout', default=30, code='TEST')
         self.assertEqual(value, 30)
@@ -127,7 +133,10 @@ class RequestIntFlaskTests(unittest.TestCase):
         self.assertIn('Selection-first edit board', page)
         self.assertIn('Transcript browser', page)
         self.assertIn('Selected lane', page)
-        self.assertIn('UI priority while the TUI stays on hold', page)
+        self.assertIn('Save snapshot', page)
+        self.assertIn('Saved drafts', page)
+        self.assertIn('Saved from model', page)
+        self.assertIn('Click numbered bite chips', page)
         self.assertNotIn('Load solar demo', page)
 
     def test_root_redirects_to_workspace(self):
